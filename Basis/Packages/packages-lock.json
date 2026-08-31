@@ -300,6 +300,14 @@
         "com.unity.mathematics": "1.3.3"
       }
     },
+    "com.basis.social": {
+      "version": "file:com.basis.social",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.unity.ugui": "2.0.0"
+      }
+    },
     "com.basis.soundpack": {
       "version": "file:com.basis.soundpack",
       "depth": 0,

@@ -1,0 +1,20 @@
+{
+  "name": "com.basis.social",
+  "displayName": "Basis Social Client",
+  "version": "0.1.0",
+  "description": "Optional Basis Social REST/session integration and native Basis menu provider.",
+  "unity": "6000.5",
+  "author": {
+    "name": "BasisVR",
+    "url": "https://github.com/BasisVR"
+  },
+  "license": "MIT",
+  "vpmDependencies": {
+    "com.basis.sdk": "0.0.1",
+    "com.basis.common": "0.0.1",
+    "com.basis.framework": "0.0.1"
+  },
+  "dependencies": {
+    "com.unity.ugui": "2.0.0"
+  }
+}

@@ -1,6 +1,9 @@
 # Export from building Basis Server
 /[Bb]asis\ [Ss]erver\ [Ee]xport
 
+# Local Unity player builds (the Unity project has its own Build/ ignore too)
+/[Bb]uild/
+
 # C# build artifacts
 [Bb]in/
 [Oo]bj/

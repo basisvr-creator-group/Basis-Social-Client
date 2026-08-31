@@ -1,0 +1,116 @@
+using System;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using UnityEngine.Networking;
+
+namespace Basis.Social
+{
+    public enum BasisSocialHttpMethod
+    {
+        Get,
+        Post,
+        Delete
+    }
+
+    public sealed class BasisSocialHttpRequest
+    {
+        public BasisSocialHttpMethod Method { get; set; }
+        public string Path { get; set; }
+        public string BodyJson { get; set; }
+        public string AccessToken { get; set; }
+    }
+
+    public sealed class BasisSocialHttpResponse
+    {
+        public long StatusCode { get; set; }
+        public string Body { get; set; }
+        public string TransportError { get; set; }
+        public bool IsSuccess => StatusCode >= 200 && StatusCode <= 299;
+    }
+
+    public interface IBasisSocialHttpTransport
+    {
+        Task<BasisSocialHttpResponse> SendAsync(
+            BasisSocialHttpRequest request,
+            CancellationToken cancellationToken = default);
+    }
+
+    public sealed class BasisSocialUnityWebRequestTransport : IBasisSocialHttpTransport
+    {
+        private readonly string baseUrl;
+        private readonly int timeoutSeconds;
+
+        public BasisSocialUnityWebRequestTransport(string baseUrl, int timeoutSeconds = 20)
+        {
+            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new ArgumentException("Basis Social base URL must be an absolute HTTP(S) URL.", nameof(baseUrl));
+            }
+
+            this.baseUrl = baseUrl.TrimEnd('/');
+            this.timeoutSeconds = Math.Max(1, timeoutSeconds);
+        }
+
+        public async Task<BasisSocialHttpResponse> SendAsync(
+            BasisSocialHttpRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+            if (string.IsNullOrWhiteSpace(request.Path) || !request.Path.StartsWith("/", StringComparison.Ordinal) ||
+                Uri.TryCreate(request.Path, UriKind.Absolute, out _))
+            {
+                throw new ArgumentException("Basis Social request paths must be relative and begin with '/'.", nameof(request));
+            }
+
+            string method = request.Method switch
+            {
+                BasisSocialHttpMethod.Get => UnityWebRequest.kHttpVerbGET,
+                BasisSocialHttpMethod.Post => UnityWebRequest.kHttpVerbPOST,
+                BasisSocialHttpMethod.Delete => UnityWebRequest.kHttpVerbDELETE,
+                _ => throw new ArgumentOutOfRangeException(nameof(request.Method), request.Method, null)
+            };
+
+            using var webRequest = new UnityWebRequest(baseUrl + request.Path, method)
+            {
+                downloadHandler = new DownloadHandlerBuffer(),
+                timeout = timeoutSeconds
+            };
+
+            if (request.BodyJson != null)
+            {
+                webRequest.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(request.BodyJson));
+                webRequest.SetRequestHeader("Content-Type", "application/json");
+            }
+
+            webRequest.SetRequestHeader("Accept", "application/json");
+            if (!string.IsNullOrEmpty(request.AccessToken))
+            {
+                webRequest.SetRequestHeader("Authorization", "Bearer " + request.AccessToken);
+            }
+
+            UnityWebRequestAsyncOperation operation = webRequest.SendWebRequest();
+            while (!operation.isDone)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    webRequest.Abort();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                await Task.Yield();
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return new BasisSocialHttpResponse
+            {
+                StatusCode = webRequest.responseCode,
+                Body = webRequest.downloadHandler?.text,
+                TransportError = webRequest.result == UnityWebRequest.Result.ConnectionError ||
+                                 webRequest.result == UnityWebRequest.Result.DataProcessingError
+                    ? webRequest.error
+                    : null
+            };
+        }
+    }
+}
