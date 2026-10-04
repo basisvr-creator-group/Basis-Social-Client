@@ -49,7 +49,7 @@ public static class BasisLoadHandler
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogError($"Error while unloading bundle '{kvp.Key}': {ex}");
+                    Debug.LogError($"Error while unloading a bundle: {ex.GetType().Name}");
                 }
 
                 if (state)
@@ -129,7 +129,7 @@ public static class BasisLoadHandler
             Key = GetBundleKey(loadableBundle);
             if (!IsDefaultAvatar)
             {
-                BasisDebug.LogWarning($"No load reservation recorded for {CombinedURL}; releasing against recomputed key '{Key}'. Either this is a double release, or the content was loaded by a path that never reserved.", BasisDebug.LogTag.Event);
+                BasisDebug.LogWarning($"No load reservation recorded; releasing against the recomputed key. Either this is a double release, or the content was loaded by a path that never reserved.", BasisDebug.LogTag.Event);
             }
         }
         if (LoadedBundles.TryGetValue(Key, out BasisTrackedBundleWrapper Wrapper))
@@ -157,7 +157,7 @@ public static class BasisLoadHandler
                 // genuinely absent bundle: the reservation stays held, so the wrapper never
                 // unloads, and whatever DID get found under the drifted key was decremented in
                 // its place.
-                BasisDebug.LogError($"tried to find Loaded Key {CombinedURL} (key '{Key}') but could not find it!");
+                BasisDebug.LogError($"Unable to find the reserved loaded bundle.");
             }
         }
     }
@@ -421,7 +421,7 @@ public static class BasisLoadHandler
         {
             if (LoadedBundles.TryGetValue(key, out BasisTrackedBundleWrapper inUseCheck) && inUseCheck != null && inUseCheck.IsInUse)
             {
-                BasisDebug.LogWarning($"Skipping in-memory unload for: {remoteUrl}; bundle is still in use.", BasisDebug.LogTag.Event);
+                BasisDebug.LogWarning($"Skipping in-memory unload for: [remote content]; bundle is still in use.", BasisDebug.LogTag.Event);
                 continue;
             }
             if (LoadedBundles.TryRemove(key, out BasisTrackedBundleWrapper removed) && removed != null)
@@ -430,7 +430,7 @@ public static class BasisLoadHandler
                 {
                     if (removed.AssetBundle != null)
                     {
-                        BasisDebug.Log($"Unloading in-memory AssetBundle for: {remoteUrl}", BasisDebug.LogTag.Event);
+                        BasisDebug.Log($"Unloading in-memory AssetBundle for: [remote content]", BasisDebug.LogTag.Event);
                         TryUnloadBundleAssets(removed);
                     }
                     else

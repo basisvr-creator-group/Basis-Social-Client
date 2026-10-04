@@ -57,11 +57,13 @@ namespace Basis.Scripts.Common
         }
 
         public static bool IsBlockedHost(string host, out string reason)
+            => IsBlockedHost(host, Application.isEditor, out reason);
+
+        public static bool IsBlockedHost(string host, bool allowLoopback, out string reason)
         {
             reason = null;
             if (string.IsNullOrEmpty(host)) { reason = "missing host"; return true; }
 
-            bool allowLoopback = Application.isEditor;
             string lower = host.ToLowerInvariant();
             if (!allowLoopback && (lower == "localhost" || lower.EndsWith(".localhost")))
             {
@@ -80,7 +82,10 @@ namespace Basis.Scripts.Common
         /// non-global. Returns null when allowed, otherwise the reason it was refused. Fails
         /// closed: an unresolvable host is treated as blocked.
         /// </summary>
-        public static async Task<string> ValidateResolvedHostAsync(string url)
+        public static Task<string> ValidateResolvedHostAsync(string url)
+            => ValidateResolvedHostAsync(url, Application.isEditor);
+
+        public static async Task<string> ValidateResolvedHostAsync(string url, bool allowLoopback)
         {
             if (string.IsNullOrWhiteSpace(url)) return null;
             if (!Uri.TryCreate(url, UriKind.Absolute, out Uri uri)) return null;
@@ -88,7 +93,6 @@ namespace Basis.Scripts.Common
             if (string.IsNullOrEmpty(host)) return null;
             if (IPAddress.TryParse(host.Trim('[', ']'), out _)) return null;
 
-            bool allowLoopback = Application.isEditor;
             IPAddress[] addresses;
             try { addresses = await Dns.GetHostAddressesAsync(host); }
             catch (Exception ex) { return $"host '{host}' could not be validated (DNS lookup failed: {ex.Message})."; }

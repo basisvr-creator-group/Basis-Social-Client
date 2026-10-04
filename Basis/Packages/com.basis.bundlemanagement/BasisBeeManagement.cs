@@ -76,7 +76,9 @@ public static class BasisBeeManagement
         {
             // Safe mid-load: the caller registered and incremented this wrapper before starting,
             // and UnloadAllForUrl skips bundles in use, so only idle copies of the old version go.
-            BasisContentVersion.Invalidate(beeLocation);
+            // This is an automatic version refresh. Preserve its rate-limit reservation;
+            // Invalidate() also clears that reservation for explicit user-driven refreshes.
+            BasisStorageManagement.DeleteStoredFile(beeLocation);
         }
 
         return false;
@@ -153,7 +155,7 @@ public static class BasisBeeManagement
 
         if (output.Item1 == null || output.Item3 != string.Empty)
         {
-            throw new Exception($"Bundle load failed for {wrapper?.LoadableBundle?.BasisRemoteBundleEncrypted?.RemoteBeeFileLocation ?? "unknown"}: {output.Item3}");
+            throw new Exception($"Bundle load failed for remote content: {output.Item3}");
         }
         // Generic (glTF) fallback section: no AssetBundle exists for this platform, the bytes
         // are an encrypted glb. Build the template instead of an AssetBundle, with the same
@@ -181,7 +183,7 @@ public static class BasisBeeManagement
 
             if (!gltfLoaded)
             {
-                throw new Exception($"Generic (glTF) avatar template creation failed for {wrapper?.LoadableBundle?.BasisRemoteBundleEncrypted?.RemoteBeeFileLocation ?? "unknown"}.");
+                throw new Exception($"Generic (glTF) avatar template creation failed for remote content.");
             }
 
             await SaveMetaIfNeeded(wrapper, shouldUseOnDiskMeta, didForceRedownload, output.Item1.Platform);
@@ -378,7 +380,17 @@ public static class BasisBeeManagement
         // Same static-url freshness gate as the full load. Library cards read the connector through
         // here, so without it a card would keep showing the previous name/thumbnail/date after the
         // bee behind its url was replaced.
-        bool useCachedConnector = IsMetaOnDisc && CacheIsCurrentForRequestedVersion(wrapper, MetaInfo, beeLocation, evictStaleCache: false);
+        bool useCachedConnector;
+        try
+        {
+            useCachedConnector = IsMetaOnDisc && CacheIsCurrentForRequestedVersion(wrapper, MetaInfo, beeLocation, evictStaleCache: false);
+        }
+        catch (BasisContentVersion.RefreshDeferredException exception)
+        {
+            // Saved library entries remain intact while version refreshes are rate limited.
+            // Do not download again or pass an older connector off as the requested version.
+            return BasisMetaLoadResult.Transient(exception.Message);
+        }
         (BasisBundleConnector Connector, string ErrorMessage) output;
         if (useCachedConnector)
         {

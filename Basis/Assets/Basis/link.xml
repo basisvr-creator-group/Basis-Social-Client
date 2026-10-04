@@ -15,6 +15,8 @@
     <assembly fullname="Basis.OpenLipSync.Runtime" preserve="all" />
     <assembly fullname="Basis.RTAO" preserve="all" />
     <assembly fullname="Basis.Shims.Samples" preserve="all" />
+    <assembly fullname="Basis.Social" preserve="all" />
+    <assembly fullname="Basis.Social.UI" preserve="all" />
     <assembly fullname="BasisBundleManagement" preserve="all" />
     <assembly fullname="BasisCamera" preserve="all" />
     <assembly fullname="BasisCommon" preserve="all" />
@@ -151,10 +153,15 @@
     <assembly fullname="glTFast.Export" preserve="all" />
     <assembly fullname="glTFast.Newtonsoft" preserve="all" />
     <assembly fullname="glTFast.dots" preserve="all" />
+    <assembly fullname="libsharpyuv" preserve="all" />
+    <assembly fullname="libwebp" preserve="all" />
+    <assembly fullname="libwebpdecoder" preserve="all" />
+    <assembly fullname="libwebpdemux" preserve="all" />
     <assembly fullname="openvr_api" preserve="all" />
     <assembly fullname="opus" preserve="all" />
     <assembly fullname="phonon" preserve="all" />
     <assembly fullname="phonon_fmod" preserve="all" />
     <assembly fullname="ucrtbased" preserve="all" />
+    <assembly fullname="unity.webp" preserve="all" />
 
 </linker>

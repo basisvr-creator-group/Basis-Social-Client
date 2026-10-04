@@ -374,8 +374,10 @@ public static class BasisNetworkEvents
                 Reader.Recycle();
                 return;
             }
+            long resourceGeneration = BasisNetworkResourceGate.Capture();
             BasisDeviceManagement.EnqueueOnMainThread(async () =>
             {
+                if (!Equals(peer, BasisNetworkConnection.LocalPlayerPeer) || !BasisNetworkResourceGate.Allows(resourceGeneration)) { Reader.Recycle(); return; }
                 BasisNetworkProfiler.AddToCounter(BasisNetworkProfilerCounter.LoadResource, Reader.AvailableBytes);
                 await BasisNetworkGenericMessages.LoadResourceMessage(Reader, deliveryMethod);
                 Reader.Recycle();
@@ -389,8 +391,10 @@ public static class BasisNetworkEvents
                 Reader.Recycle();
                 return;
             }
+            long resourceGeneration = BasisNetworkResourceGate.Capture();
             BasisDeviceManagement.EnqueueOnMainThread(async () =>
             {
+                if (!Equals(peer, BasisNetworkConnection.LocalPlayerPeer) || !BasisNetworkResourceGate.Allows(resourceGeneration)) { Reader.Recycle(); return; }
                BasisNetworkProfiler.AddToCounter(BasisNetworkProfilerCounter.UnloadResource, Reader.AvailableBytes);
                await BasisNetworkGenericMessages.UnloadResourceMessage(Reader, deliveryMethod);
                 Reader.Recycle();
@@ -404,8 +408,10 @@ public static class BasisNetworkEvents
                 Reader.Recycle();
                 return;
             }
+            long resourceGeneration = BasisNetworkResourceGate.Capture();
             BasisDeviceManagement.EnqueueOnMainThread(async () =>
             {
+                if (!Equals(peer, BasisNetworkConnection.LocalPlayerPeer) || !BasisNetworkResourceGate.Allows(resourceGeneration)) { Reader.Recycle(); return; }
                 await BasisNetworkGenericMessages.ModifyResourceMessage(Reader, deliveryMethod);
                 Reader.Recycle();
             });
@@ -418,8 +424,12 @@ public static class BasisNetworkEvents
                 Reader.Recycle();
                 return;
             }
+            // Every legacy server sends this library, even when empty. Ignore it silently in
+            // verified-world sessions, retaining the warning for actual resource load commands.
+            long resourceGeneration = BasisNetworkResourceGate.Capture();
             BasisDeviceManagement.EnqueueOnMainThread(() =>
             {
+                if (!Equals(peer, BasisNetworkConnection.LocalPlayerPeer) || !BasisNetworkResourceGate.Allows(resourceGeneration, notifyRejected: false)) { Reader.Recycle(); return; }
                 try
                 {
                     HandleServerLibraryReceive(Reader);
@@ -569,8 +579,10 @@ public static class BasisNetworkEvents
                 Reader.Recycle();
                 return;
             }
+            long resourceGeneration = BasisNetworkResourceGate.Capture();
             BasisDeviceManagement.EnqueueOnMainThread(async () =>
             {
+                if (!Equals(peer, BasisNetworkConnection.LocalPlayerPeer) || !BasisNetworkResourceGate.Allows(resourceGeneration)) { Reader.Recycle(); return; }
                 BasisNetworkProfiler.AddToCounter(BasisNetworkProfilerCounter.SpawnPreloaded, Reader.AvailableBytes);
                 await BasisNetworkGenericMessages.SpawnPreloadedMessage(Reader, deliveryMethod);
                 Reader.Recycle();

@@ -5,8 +5,12 @@
     "Basis.Social",
     "Basis Framework",
     "BasisSDK",
+    "BasisBundleManagement",
+    "BasisCommon",
     "UnityEngine.UI",
-    "Unity.TextMeshPro"
+    "Unity.TextMeshPro",
+    "unity.webp",
+    "BasisNetworkCore"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

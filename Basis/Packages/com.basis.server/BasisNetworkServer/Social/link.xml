@@ -1,0 +1,10 @@
+<linker>
+  <assembly fullname="BasisNetworkServer">
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/ConsumeRequest" preserve="all" />
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/ConsumeResponse" preserve="all" />
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/InstanceIdentity" preserve="all" />
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/LeaseRequest" preserve="all" />
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/MemberRequest" preserve="all" />
+    <type fullname="Basis.Network.Server.Social.BasisSocialAdmission/EmptyResponse" preserve="all" />
+  </assembly>
+</linker>

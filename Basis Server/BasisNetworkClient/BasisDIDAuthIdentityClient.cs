@@ -25,6 +25,14 @@ namespace BasisNetworkClient
         {
 #if UNITY_2017_1_OR_NEWER
             DidUrlFragment = new DidUrlFragment(string.Empty);
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+            // Isolated multi-client tests use independent in-memory keys without changing saved identity.
+            if (Environment.GetEnvironmentVariable("BASIS_CLIENT_EPHEMERAL_IDENTITY") == "1")
+            {
+                if (DID == null) ClientKeyCreation(out Key, out DID);
+                return DID.V;
+            }
+#endif
 
             string privateKeyBase64 = PlayerPrefs.GetString(PrivateKeyDID, string.Empty);
             string publicKeyBase = PlayerPrefs.GetString(PublicKeyDID, string.Empty);

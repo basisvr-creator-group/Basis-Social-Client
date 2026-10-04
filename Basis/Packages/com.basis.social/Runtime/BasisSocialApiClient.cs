@@ -5,181 +5,258 @@ using UnityEngine;
 
 namespace Basis.Social
 {
-    public sealed class BasisSocialApiClient
+    public sealed partial class BasisSocialApiClient
     {
         private const string LoginPath = "/api/v1/auth/login";
         private const string RefreshPath = "/api/v1/auth/refresh";
-        private const string LogoutPath = "/api/v1/auth/logout";
         private const string MePath = "/api/v1/me";
-
         private readonly IBasisSocialHttpTransport transport;
         private readonly IBasisSocialTokenStore tokenStore;
         private readonly SemaphoreSlim refreshLock = new(1, 1);
+        private readonly object sessionGate = new();
+        private long generation;
 
-        public BasisSocialApiClient(
-            IBasisSocialHttpTransport transport,
-            IBasisSocialTokenStore tokenStore = null)
+        public BasisSocialApiClient(IBasisSocialHttpTransport transport, IBasisSocialTokenStore tokenStore = null)
         {
             this.transport = transport ?? throw new ArgumentNullException(nameof(transport));
             this.tokenStore = tokenStore ?? new BasisSocialMemoryTokenStore();
         }
 
         public BasisSocialUser CurrentUser { get; private set; }
-        public bool HasSession => !string.IsNullOrEmpty(tokenStore.AccessToken) ||
-                                  !string.IsNullOrEmpty(tokenStore.RefreshToken);
-
+        public bool HasSession { get { lock (sessionGate) return !string.IsNullOrEmpty(tokenStore.AccessToken) || !string.IsNullOrEmpty(tokenStore.RefreshToken); } }
         public event Action<BasisSocialUser> SessionChanged;
 
-        public async Task<BasisSocialUser> LoginAsync(
-            string login,
-            string password,
-            CancellationToken cancellationToken = default)
+        public async Task<BasisSocialUser> LoginAsync(string login, string password, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(login)) throw new ArgumentException("Login is required.", nameof(login));
             if (string.IsNullOrEmpty(password)) throw new ArgumentException("Password is required.", nameof(password));
+            return await AuthenticateAsync(LoginPath, JsonUtility.ToJson(new BasisSocialLoginRequest { login = login.Trim(), password = password }), cancellationToken);
+        }
 
-            var payload = new BasisSocialLoginRequest { login = login.Trim(), password = password };
-            BasisSocialHttpResponse response = await transport.SendAsync(new BasisSocialHttpRequest
-            {
-                Method = BasisSocialHttpMethod.Post,
-                Path = LoginPath,
-                BodyJson = JsonUtility.ToJson(payload)
-            }, cancellationToken);
+        /// <summary>Start an explicit browser approval. Set linkCurrentAccount only when the user requested linking their signed-in Social account.</summary>
+        public async Task<BasisSocialBeeBaAuthorization> StartBeeBaAsync(string codeChallenge, bool linkCurrentAccount = false, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(codeChallenge)) throw new ArgumentException("S256 challenge is required.", nameof(codeChallenge));
+            long epoch = SnapshotGeneration();
+            string body = JsonUtility.ToJson(new BasisSocialBeeBaStartRequest { codeChallenge = codeChallenge });
+            BasisSocialHttpResponse response = linkCurrentAccount
+                ? await SendAuthorizedAsync(BasisSocialHttpMethod.Post, "/api/v1/auth/beeba/start", body, true, cancellationToken)
+                : await transport.SendAsync(new BasisSocialHttpRequest { Method = BasisSocialHttpMethod.Post, Path = "/api/v1/auth/beeba/start", BodyJson = body }, cancellationToken);
+            AssertCurrent(epoch);
+            EnsureSuccess(response);
+            var result = Deserialize<BasisSocialBeeBaAuthorization>(response.Body, response.StatusCode);
+            if (string.IsNullOrEmpty(result.deviceCode) || string.IsNullOrEmpty(result.userCode) ||
+                !Uri.TryCreate(result.verificationUri, UriKind.Absolute, out Uri uri) ||
+                (uri.Scheme != Uri.UriSchemeHttps && !(uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback)) ||
+                !string.IsNullOrEmpty(uri.UserInfo) || result.expiresIn <= 0 || result.interval <= 0)
+                throw new BasisSocialApiException(0, "invalid_response", "Invalid browser authorization response.");
+            return result;
+        }
 
-            BasisSocialAuthSession session = ReadSession(response);
-            ApplySession(session);
-            return CurrentUser;
+        /// <summary>Complete only after the user's browser approval; pending/denied/expired errors remain typed. No automatic polling or browser approval.</summary>
+        public Task<BasisSocialUser> CompleteBeeBaAsync(string deviceCode, string codeVerifier, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(deviceCode)) throw new ArgumentException("Device code is required.", nameof(deviceCode));
+            if (string.IsNullOrWhiteSpace(codeVerifier)) throw new ArgumentException("Code verifier is required.", nameof(codeVerifier));
+            return AuthenticateAsync("/api/v1/auth/beeba/complete", JsonUtility.ToJson(new BasisSocialBeeBaCompleteRequest { deviceCode = deviceCode, codeVerifier = codeVerifier }), cancellationToken);
+        }
+
+        private async Task<BasisSocialUser> AuthenticateAsync(string path, string body, CancellationToken cancellationToken)
+        {
+            long epoch;
+            lock (sessionGate) epoch = ++generation;
+            var response = await transport.SendAsync(new BasisSocialHttpRequest { Method = BasisSocialHttpMethod.Post, Path = path, BodyJson = body }, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            AssertCurrent(epoch);
+            var session = ReadSession(response);
+            ApplySession(session, epoch, true);
+            return session.user;
         }
 
         public async Task<BasisSocialUser> RestoreSessionAsync(CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrEmpty(tokenStore.AccessToken))
-            {
-                if (string.IsNullOrEmpty(tokenStore.RefreshToken)) return null;
-                await RefreshSessionAsync(cancellationToken);
-            }
-
+            if (!HasSession) return null;
             return await GetMeAsync(cancellationToken);
         }
 
         public async Task<BasisSocialUser> GetMeAsync(CancellationToken cancellationToken = default)
         {
-            BasisSocialHttpResponse response = await SendAuthorizedAsync(
-                BasisSocialHttpMethod.Get,
-                MePath,
-                null,
-                true,
-                cancellationToken);
-
+            long epoch = SnapshotGeneration();
+            var response = await SendAuthorizedAsync(BasisSocialHttpMethod.Get, MePath, null, true, cancellationToken);
             EnsureSuccess(response);
-            CurrentUser = Deserialize<BasisSocialUser>(response.Body, response.StatusCode);
-            SessionChanged?.Invoke(CurrentUser);
-            return CurrentUser;
+            var user = Deserialize<BasisSocialUser>(response.Body, response.StatusCode);
+            lock (sessionGate) { AssertCurrent(epoch); CurrentUser = user; }
+            SessionChanged?.Invoke(user);
+            return user;
         }
 
-        public async Task RefreshSessionAsync(CancellationToken cancellationToken = default)
+        /// <summary>Edits Social-owned text only. Display name and image remain managed by BeeBa.</summary>
+        public async Task<BasisSocialProfile> UpdateProfileAsync(string bio, string statusText, CancellationToken cancellationToken = default)
+        {
+            if (bio == null) throw new ArgumentNullException(nameof(bio));
+            if (statusText == null) throw new ArgumentNullException(nameof(statusText));
+            long epoch = SnapshotGeneration();
+            var response = await SendAuthorizedAsync(BasisSocialHttpMethod.Patch, "/api/v1/me/profile",
+                JsonUtility.ToJson(new BasisSocialProfileTextUpdate { bio = bio, statusText = statusText }), true, cancellationToken);
+            EnsureSuccess(response);
+            var profile = Deserialize<BasisSocialProfile>(response.Body, response.StatusCode);
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (sessionGate)
+            {
+                AssertCurrent(epoch);
+                if (CurrentUser != null) CurrentUser.profile = profile;
+            }
+            SessionChanged?.Invoke(CurrentUser);
+            return profile;
+        }
+
+        public async Task<BasisSocialDeviceSession[]> ListSessionsAsync(CancellationToken cancellationToken = default)
+        {
+            var response = await SendAuthorizedAsync(BasisSocialHttpMethod.Get, "/api/v1/auth/sessions", null, true, cancellationToken);
+            EnsureSuccess(response);
+            return Deserialize<BasisSocialSessionList>(response.Body, response.StatusCode).items ?? Array.Empty<BasisSocialDeviceSession>();
+        }
+
+        public async Task RevokeSessionAsync(BasisSocialDeviceSession session, CancellationToken cancellationToken = default)
+        {
+            if (session == null || !Guid.TryParse(session.id, out _)) throw new ArgumentException("A valid device session is required.", nameof(session));
+            long epoch = SnapshotGeneration();
+            var response = await SendAuthorizedAsync(BasisSocialHttpMethod.Delete, "/api/v1/auth/sessions/" + Uri.EscapeDataString(session.id), null, true, cancellationToken);
+            EnsureSuccess(response, 204);
+            if (session.current) ClearSessionIfCurrent(epoch);
+        }
+
+        public Task LogoutCurrentAsync(CancellationToken cancellationToken = default) => LogoutAtAsync("/api/v1/auth/logout-current", false, cancellationToken);
+        public Task LogoutAllAsync(CancellationToken cancellationToken = default) => LogoutAtAsync("/api/v1/auth/logout-all", false, cancellationToken);
+        // Preserve the legacy all-device endpoint and local-clear-on-error behavior for existing callers.
+        public Task LogoutAsync(CancellationToken cancellationToken = default) => LogoutAtAsync("/api/v1/auth/logout", true, cancellationToken);
+
+        private async Task LogoutAtAsync(string path, bool clearOnFailure, CancellationToken cancellationToken)
+        {
+            long epoch = SnapshotGeneration();
+            try
+            {
+                if (HasSession)
+                {
+                    var response = await SendAuthorizedAsync(BasisSocialHttpMethod.Post, path, null, true, cancellationToken);
+                    EnsureSuccess(response, 204);
+                }
+                ClearSessionIfCurrent(epoch);
+            }
+            finally { if (clearOnFailure) ClearSessionIfCurrent(epoch); }
+        }
+
+        public Task RefreshSessionAsync(CancellationToken cancellationToken = default)
+        {
+            long epoch; string refreshToken;
+            lock (sessionGate) { epoch = generation; refreshToken = tokenStore.RefreshToken; }
+            return RefreshSessionAsync(epoch, refreshToken, cancellationToken);
+        }
+
+        private async Task RefreshSessionAsync(long epoch, string observedRefreshToken, CancellationToken cancellationToken)
         {
             await refreshLock.WaitAsync(cancellationToken);
             try
             {
-                string refreshToken = tokenStore.RefreshToken;
-                if (string.IsNullOrEmpty(refreshToken))
+                lock (sessionGate)
                 {
-                    ClearSession();
+                    AssertCurrent(epoch);
+                    // Another request already rotated this token; share its result.
+                    if (tokenStore.RefreshToken != observedRefreshToken) return;
+                }
+                if (string.IsNullOrEmpty(observedRefreshToken))
+                {
+                    ClearSessionIfCurrent(epoch);
                     throw new BasisSocialApiException(401, "missing_refresh_token", "No refresh token is available.");
                 }
-
-                var payload = new BasisSocialRefreshRequest { refreshToken = refreshToken };
-                BasisSocialHttpResponse response = await transport.SendAsync(new BasisSocialHttpRequest
+                BasisSocialHttpResponse response;
+                try
                 {
-                    Method = BasisSocialHttpMethod.Post,
-                    Path = RefreshPath,
-                    BodyJson = JsonUtility.ToJson(payload)
-                }, cancellationToken);
-
-                if (response.StatusCode == 401)
-                {
-                    ClearSession();
-                }
-
-                BasisSocialAuthSession session = ReadSession(response);
-                ApplySession(session);
-            }
-            finally
-            {
-                refreshLock.Release();
-            }
-        }
-
-        public async Task LogoutAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                if (!string.IsNullOrEmpty(tokenStore.AccessToken))
-                {
-                    BasisSocialHttpResponse response = await transport.SendAsync(new BasisSocialHttpRequest
+                    response = await transport.SendAsync(new BasisSocialHttpRequest
                     {
-                        Method = BasisSocialHttpMethod.Post,
-                        Path = LogoutPath,
-                        AccessToken = tokenStore.AccessToken
+                        Method = BasisSocialHttpMethod.Post, Path = RefreshPath,
+                        BodyJson = JsonUtility.ToJson(new BasisSocialRefreshRequest { refreshToken = observedRefreshToken })
                     }, cancellationToken);
-                    EnsureSuccess(response, 204);
                 }
+                catch
+                {
+                    // A lost rotation response cannot safely reuse the consumed refresh token.
+                    ClearSessionIfCurrent(epoch);
+                    throw;
+                }
+                AssertCurrent(epoch);
+                if (response == null || response.StatusCode == 401 || response.StatusCode == 0 || !string.IsNullOrEmpty(response.TransportError))
+                    ClearSessionIfCurrent(epoch);
+                BasisSocialAuthSession session;
+                try { session = ReadSession(response); }
+                catch { if (response?.IsSuccess == true) ClearSessionIfCurrent(epoch); throw; }
+                try { ApplySession(session, epoch, false); }
+                catch { ClearSessionIfCurrent(epoch); throw; }
             }
-            finally
-            {
-                ClearSession();
-            }
+            finally { refreshLock.Release(); }
         }
 
         public void ClearSession()
         {
-            tokenStore.Clear();
-            CurrentUser = null;
+            lock (sessionGate) { generation++; tokenStore.Clear(); CurrentUser = null; }
             SessionChanged?.Invoke(null);
         }
 
-        private async Task<BasisSocialHttpResponse> SendAuthorizedAsync(
-            BasisSocialHttpMethod method,
-            string path,
-            string bodyJson,
-            bool retryAfterRefresh,
-            CancellationToken cancellationToken)
+        private void ClearSessionIfCurrent(long epoch)
         {
-            if (string.IsNullOrEmpty(tokenStore.AccessToken))
+            lock (sessionGate)
             {
-                if (string.IsNullOrEmpty(tokenStore.RefreshToken))
-                    throw new BasisSocialApiException(401, "unauthorized", "Authentication is required.");
-                await RefreshSessionAsync(cancellationToken);
+                if (generation != epoch) return;
+                generation++; tokenStore.Clear(); CurrentUser = null;
             }
+            SessionChanged?.Invoke(null);
+        }
 
-            BasisSocialHttpResponse response = await transport.SendAsync(new BasisSocialHttpRequest
-            {
-                Method = method,
-                Path = path,
-                BodyJson = bodyJson,
-                AccessToken = tokenStore.AccessToken
-            }, cancellationToken);
+        private long SnapshotGeneration() { lock (sessionGate) return generation; }
+        private void AssertCurrent(long epoch)
+        {
+            lock (sessionGate) if (generation != epoch) throw new OperationCanceledException("The authentication session changed.");
+        }
 
-            if (response.StatusCode == 401 && retryAfterRefresh && !string.IsNullOrEmpty(tokenStore.RefreshToken))
+        private async Task<BasisSocialHttpResponse> SendAuthorizedAsync(BasisSocialHttpMethod method, string path, string bodyJson, bool retryAfterRefresh, CancellationToken cancellationToken)
+        {
+            long epoch;
+            string accessToken, refreshToken;
+            lock (sessionGate) { epoch = generation; accessToken = tokenStore.AccessToken; refreshToken = tokenStore.RefreshToken; }
+            if (string.IsNullOrEmpty(accessToken))
             {
-                await RefreshSessionAsync(cancellationToken);
-                return await SendAuthorizedAsync(method, path, bodyJson, false, cancellationToken);
+                if (string.IsNullOrEmpty(refreshToken)) throw new BasisSocialApiException(401, "unauthorized", "Authentication is required.");
+                await RefreshSessionAsync(epoch, refreshToken, cancellationToken);
+                lock (sessionGate) { AssertCurrent(epoch); accessToken = tokenStore.AccessToken; }
             }
-
+            var response = await transport.SendAsync(new BasisSocialHttpRequest { Method = method, Path = path, BodyJson = bodyJson, AccessToken = accessToken }, cancellationToken);
+            AssertCurrent(epoch);
+            if (response.StatusCode == 401 && retryAfterRefresh)
+            {
+                bool mustRefresh;
+                lock (sessionGate) { mustRefresh = tokenStore.AccessToken == accessToken; refreshToken = tokenStore.RefreshToken; }
+                if (!string.IsNullOrEmpty(refreshToken))
+                {
+                    if (mustRefresh) await RefreshSessionAsync(epoch, refreshToken, cancellationToken);
+                    AssertCurrent(epoch);
+                    return await SendAuthorizedAsync(method, path, bodyJson, false, cancellationToken);
+                }
+            }
             return response;
         }
 
-        private void ApplySession(BasisSocialAuthSession session)
+        private void ApplySession(BasisSocialAuthSession session, long epoch, bool newLogin)
         {
-            if (session == null || string.IsNullOrEmpty(session.accessToken) || string.IsNullOrEmpty(session.refreshToken))
-            {
+            if (session == null || string.IsNullOrEmpty(session.accessToken) || string.IsNullOrEmpty(session.refreshToken) || session.user == null)
                 throw new BasisSocialApiException(0, "invalid_response", "Basis Social returned an incomplete auth session.");
+            lock (sessionGate)
+            {
+                AssertCurrent(epoch);
+                tokenStore.Save(session.accessToken, session.refreshToken);
+                CurrentUser = session.user;
+                if (newLogin) generation++;
             }
-
-            tokenStore.Save(session.accessToken, session.refreshToken);
-            CurrentUser = session.user;
-            SessionChanged?.Invoke(CurrentUser);
+            SessionChanged?.Invoke(session.user);
         }
 
         private static BasisSocialAuthSession ReadSession(BasisSocialHttpResponse response)

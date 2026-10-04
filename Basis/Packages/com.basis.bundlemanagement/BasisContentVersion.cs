@@ -15,6 +15,13 @@ using System.Collections.Concurrent;
 /// </summary>
 public static class BasisContentVersion
 {
+    public sealed class RefreshDeferredException : InvalidOperationException
+    {
+        public RefreshDeferredException() : base("The requested content version differs from the cached package. Retry after the recent refresh completes.") { }
+        public string GetUserMessage(string locale) => string.Equals(locale, "ru", StringComparison.OrdinalIgnoreCase)
+            ? "Версия пакета изменилась. Подождите немного и повторите загрузку."
+            : "The package version changed. Wait briefly and retry loading.";
+    }
     /// <summary>
     /// Minimum spacing between version-triggered re-downloads of the same url.
     ///
@@ -135,7 +142,7 @@ public static class BasisContentVersion
 
     /// <summary>
     /// The load path's decision: may this cached entry serve the requested version?
-    /// Applies <see cref="CacheSatisfies"/> and then the anti-amplification throttle.
+    /// An explicit version mismatch never authorizes serving older bytes.
     /// </summary>
     public static bool ShouldUseCache(BasisBEEExtensionMeta meta, string requestedTag, string remoteUrl)
     {
@@ -145,12 +152,9 @@ public static class BasisContentVersion
         }
 
         if (!TryBeginVersionRefresh(remoteUrl))
-        {
-            BasisDebug.LogWarning($"Version mismatch for {remoteUrl} but a refresh already ran within {VersionRefreshThrottleSeconds}s; serving the cached copy. Repeated mismatches from a peer are ignored by design.", BasisDebug.LogTag.Event);
-            return true;
-        }
-
-        BasisDebug.Log($"Cached copy of {remoteUrl} is out of date (cached '{Normalize(meta?.CachedVersionTag)}', requested '{Normalize(requestedTag)}'); refreshing.", BasisDebug.LogTag.Event);
+            throw new RefreshDeferredException();
+        // Keep the anti-amplification limit without substituting a different version's bytes.
+        BasisDebug.Log("Cached content has a different version; refreshing.", BasisDebug.LogTag.Event);
         return false;
     }
 
@@ -251,7 +255,7 @@ public static class BasisContentVersion
         // unobserved task exception and silently re-ask the host on every launch.
         if (string.IsNullOrWhiteSpace(meta.UniqueVersion))
         {
-            BasisDebug.LogWarning($"Recorded content version for {remoteUrl} in memory only; the cache entry has no UniqueVersion to file it under.", BasisDebug.LogTag.Event);
+            BasisDebug.LogWarning($"Recorded content version for [remote content] in memory only; the cache entry has no UniqueVersion to file it under.", BasisDebug.LogTag.Event);
             return false;
         }
 

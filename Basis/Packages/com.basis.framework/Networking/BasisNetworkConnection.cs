@@ -40,7 +40,7 @@ namespace Basis.Scripts.Networking
             localId = (ushort)LocalPlayerPeer.RemoteId;
             return true;
         }
-        public static void Connect(ushort port, string ipString, string primitivePassword, bool isHostMode, string networkStackId = "")
+        public static void Connect(ushort port, string ipString, string primitivePassword, bool isHostMode, string networkStackId = "", string socialJoinTicket = null, CancellationToken cancellationToken = default)
         {
             BNL.LogOutput -= LogOutput;
             BNL.LogOutput += LogOutput;
@@ -140,9 +140,15 @@ namespace Basis.Scripts.Networking
                         NetworkStackId = networkStackId ?? string.Empty,
                     };
                     // Pass the token into anything that supports cancellation
+                    cancellationToken.ThrowIfCancellationRequested();
                     LocalPlayerPeer = NetworkClient.StartClient(
                         ipString, port, readyMessage,
-                        Encoding.UTF8.GetBytes(primitivePassword), serverConfig);
+                        Encoding.UTF8.GetBytes(primitivePassword), serverConfig, socialJoinTicket: socialJoinTicket);
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        NetworkClient.Disconnect();
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
 
                     NetworkClient.listener.PeerConnectedEvent -= PeerConnectedEvent;
                     NetworkClient.listener.PeerConnectedEvent += PeerConnectedEvent;

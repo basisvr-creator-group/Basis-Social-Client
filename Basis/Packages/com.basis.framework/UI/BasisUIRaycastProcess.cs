@@ -2,6 +2,7 @@ using Basis.BasisUI;
 using Basis.Scripts.BasisSdk.Interactions;
 using Basis.Scripts.Device_Management;
 using Basis.Scripts.Device_Management.Devices;
+using Basis.Scripts.Device_Management.Devices.Desktop;
 using Basis.Scripts.TransformBinders.BoneControl;
 
 using System.Collections.Generic;
@@ -20,10 +21,27 @@ namespace Basis.Scripts.UI
         public bool HasEvent = false;
 
         private Vector2 _vrScrollStick;
+        private int _desktopPressFrame = -1;
+        private bool _desktopPressedThisPass;
 
-        private static bool IsTriggerDown(BasisInput input, bool wasDown)
+        private bool DesktopReleasedThisPass(BasisInput input)
+        {
+            var action = BasisLocalInputActions.LeftMousePressed;
+            return input is BasisDesktopEye && action != null && action.enabled &&
+                action.WasReleasedThisFrame() && !action.IsPressed();
+        }
+
+        private bool IsTriggerDown(BasisInput input, bool wasDown)
         {
             float trigger = input.CurrentInputState.Trigger;
+            var action = BasisLocalInputActions.LeftMousePressed;
+            if (input is BasisDesktopEye && action != null && action.enabled)
+            {
+                // Down and up may both arrive in one InputSystem update. The final float is
+                // zero, but the press edge must still reach the UI before its matching release.
+                if (_desktopPressedThisPass) return true;
+                trigger = action.ReadValue<float>();
+            }
             float press = BasisSettingsDefaults.UIClickPressThreshold.RawValue;
             float release = Mathf.Min(BasisSettingsDefaults.UIClickReleaseThreshold.RawValue, press);
             return wasDown ? trigger >= release : trigger >= press;
@@ -60,6 +78,11 @@ namespace Basis.Scripts.UI
             {
                 return;
             }
+
+            var desktopAction = BasisLocalInputActions.LeftMousePressed;
+            _desktopPressedThisPass = desktopAction != null && desktopAction.enabled &&
+                desktopAction.WasPressedThisFrame() && _desktopPressFrame != Time.frameCount;
+            if (_desktopPressedThisPass) _desktopPressFrame = Time.frameCount;
 
             // Snapshot the field before iterating: a UI event raised inside this
             // loop (e.g. a pointerUp that fires a dropdown OnValueChanged that
@@ -186,6 +209,23 @@ namespace Basis.Scripts.UI
                                 EventSystem.current.SetSelectedGameObject(null, eventData);
                             }
                         }
+                    }
+
+                    // Complete a same-update desktop click now, without manufacturing a held
+                    // frame. VR keeps its analog press/release hysteresis and drag behavior.
+                    if (isDownThisFrame && DesktopReleasedThisPass(input))
+                    {
+                        if (eventData.WasLastDown)
+                        {
+                            EffectiveMouseUp(eventData, input);
+                            eventData.WasLastDown = false;
+                        }
+                        toolkitPointer.BeginFrame(false);
+                        if (toolkitPointer.IsPressed && hasToolkitTarget)
+                            toolkitPointer.Process(input.BasisUIRaycast.HitToolkitPanel,
+                                input.BasisUIRaycast.ToolkitPanelPosition, false, Vector2.zero);
+                        else if (toolkitPointer.IsPressed)
+                            toolkitPointer.Release();
                     }
                 }
             }

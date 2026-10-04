@@ -1,0 +1,7 @@
+{
+  "name": "Basis.Social.Editor",
+  "rootNamespace": "Basis.Social.Editor",
+  "references": ["BasisEditor", "BasisSDK"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

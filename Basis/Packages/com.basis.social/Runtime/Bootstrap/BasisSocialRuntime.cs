@@ -9,11 +9,16 @@ namespace Basis.Social
     /// </summary>
     public static class BasisSocialRuntime
     {
-        public const string DefaultBaseUrl = "http://127.0.0.1:8080";
+        public const string DefaultBaseUrl = "";
+        public const string AllowLoopbackEnvironmentVariable = "BASIS_SOCIAL_ALLOW_LOOPBACK_HTTP";
+        public const string AllowLoopbackArgument = "--basis-social-allow-loopback-http";
         public const string BaseUrlEnvironmentVariable = "BASIS_SOCIAL_BASE_URL";
         public const string BaseUrlArgument = "--basis-social-url";
 
         public static string BaseUrl { get; private set; }
+        public static bool IsConfigured => Client != null;
+        public static bool AllowLoopbackHttp { get; private set; }
+        public static string ConfigurationError { get; private set; }
         public static BasisSocialApiClient Client { get; private set; }
 
         public static event Action<BasisSocialApiClient> ClientChanged;
@@ -21,15 +26,18 @@ namespace Basis.Social
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void Initialize()
         {
+            Client?.ClearSession();
             BaseUrl = null;
             Client = null;
-            Configure(ResolveBaseUrl());
+            AllowLoopbackHttp = false;
+            ConfigurationError = null;
+            TryConfigureEnvironment();
         }
 
         public static BasisSocialApiClient EnsureClient()
         {
-            if (Client == null) Configure(ResolveBaseUrl());
-            return Client;
+            if (Client == null) TryConfigureEnvironment();
+            return Client ?? throw new InvalidOperationException("Configure the Social service endpoint before connecting.");
         }
 
         /// <summary>
@@ -38,11 +46,15 @@ namespace Basis.Social
         /// </summary>
         public static BasisSocialApiClient Configure(
             string baseUrl,
-            IBasisSocialTokenStore tokenStore = null)
+            IBasisSocialTokenStore tokenStore = null,
+            bool allowLoopbackHttp = false)
         {
-            string normalizedBaseUrl = NormalizeBaseUrl(baseUrl);
-            var transport = new BasisSocialUnityWebRequestTransport(normalizedBaseUrl);
+            string normalizedBaseUrl = NormalizeBaseUrl(baseUrl, allowLoopbackHttp);
+            var transport = new BasisSocialUnityWebRequestTransport(normalizedBaseUrl, allowLoopbackHttp: allowLoopbackHttp);
+            Client?.ClearSession();
             BaseUrl = normalizedBaseUrl;
+            AllowLoopbackHttp = allowLoopbackHttp;
+            ConfigurationError = null;
             Client = new BasisSocialApiClient(transport, tokenStore);
             ClientChanged?.Invoke(Client);
             return Client;
@@ -51,7 +63,7 @@ namespace Basis.Social
         public static string ResolveBaseUrl()
         {
             string environmentValue = Environment.GetEnvironmentVariable(BaseUrlEnvironmentVariable);
-            if (!string.IsNullOrWhiteSpace(environmentValue)) return NormalizeBaseUrl(environmentValue);
+            if (!string.IsNullOrWhiteSpace(environmentValue)) return NormalizeBaseUrl(environmentValue, ResolveAllowLoopback());
 
             string[] arguments;
             try
@@ -68,27 +80,48 @@ namespace Basis.Social
             {
                 string argument = arguments[index];
                 if (argument.StartsWith(prefix, StringComparison.Ordinal))
-                    return NormalizeBaseUrl(argument.Substring(prefix.Length));
+                    return NormalizeBaseUrl(argument.Substring(prefix.Length), ResolveAllowLoopback());
 
                 if (string.Equals(argument, BaseUrlArgument, StringComparison.Ordinal) && index + 1 < arguments.Length)
-                    return NormalizeBaseUrl(arguments[index + 1]);
+                    return NormalizeBaseUrl(arguments[index + 1], ResolveAllowLoopback());
             }
 
             return DefaultBaseUrl;
         }
 
-        public static string NormalizeBaseUrl(string baseUrl)
+        private static bool ResolveAllowLoopback()
         {
-            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out Uri parsed) ||
-                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps) ||
-                !string.IsNullOrEmpty(parsed.UserInfo))
+            if (Environment.GetEnvironmentVariable(AllowLoopbackEnvironmentVariable) == "1") return true;
+            return Array.IndexOf(Environment.GetCommandLineArgs(), AllowLoopbackArgument) >= 0;
+        }
+
+        private static void TryConfigureEnvironment()
+        {
+            try
+            {
+                AllowLoopbackHttp = ResolveAllowLoopback();
+                string endpoint = ResolveBaseUrl();
+                if (!string.IsNullOrWhiteSpace(endpoint)) Configure(endpoint, allowLoopbackHttp: AllowLoopbackHttp);
+            }
+            catch (ArgumentException)
+            {
+                // User-facing configuration state; never print an invalid URL containing credentials.
+                ConfigurationError = "invalid_endpoint";
+            }
+        }
+
+        public static string NormalizeBaseUrl(string baseUrl, bool allowLoopbackHttp = false)
+        {
+            if (!Uri.TryCreate(baseUrl?.Trim(), UriKind.Absolute, out Uri parsed) ||
+                (parsed.Scheme != Uri.UriSchemeHttps && !(allowLoopbackHttp && parsed.Scheme == Uri.UriSchemeHttp && parsed.IsLoopback)) ||
+                !string.IsNullOrEmpty(parsed.UserInfo) || !string.IsNullOrEmpty(parsed.Query) ||
+                !string.IsNullOrEmpty(parsed.Fragment) || parsed.AbsolutePath != "/")
             {
                 throw new ArgumentException(
-                    "Basis Social base URL must be an absolute HTTP(S) URL without embedded credentials.",
+                    "Use an HTTPS service origin. HTTP loopback requires explicit development mode.",
                     nameof(baseUrl));
             }
-
-            return baseUrl.Trim().TrimEnd('/');
+            return parsed.GetLeftPart(UriPartial.Authority);
         }
     }
 }

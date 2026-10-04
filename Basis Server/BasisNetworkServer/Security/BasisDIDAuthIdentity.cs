@@ -26,6 +26,7 @@ namespace BasisDidLink
     {
         internal readonly DidAuthentication DidAuth;
         public ConcurrentDictionary<int, OnAuth> AuthIdentity = new ConcurrentDictionary<int, OnAuth>();
+        private readonly ConcurrentDictionary<NetPeer, byte> _verificationStarted = new ConcurrentDictionary<NetPeer, byte>();
         private readonly ConcurrentDictionary<int, CancellationTokenSource> _timeouts = new ConcurrentDictionary<int, CancellationTokenSource>();
         private readonly ConcurrentDictionary<string, int> _didCounts = new ConcurrentDictionary<string, int>();
         public ConcurrentDictionary<string, byte> Admins = new ConcurrentDictionary<string, byte>();
@@ -70,6 +71,7 @@ namespace BasisDidLink
             public Challenge Challenge;
             public Did Did;
             public NetPeer Peer;
+            public string SocialJoinTicket;
 
             public bool Equals(OnAuth other) => object.Equals(Peer, other.Peer);
             public override bool Equals(object obj) => obj is OnAuth other && Equals(other);
@@ -114,6 +116,12 @@ namespace BasisDidLink
                 if (Configuration.LogConnectionHandshake) BNL.Log($"Processing connection from peer {newPeer.Id}.");
                 ReadyMessage readyMessage = new ReadyMessage();
                 readyMessage.Deserialize(ConnectionRequest.Data);
+                if (!BasisSocialJoinTicket.TryRead(ConnectionRequest.Data, out string socialTicket) ||
+                    (NetworkServer.SocialAdmission != null) != (socialTicket != null))
+                {
+                    BasisServerHandleEvents.RejectWithReason(newPeer, "A valid ticket for this Social instance is required.");
+                    return;
+                }
 
                 if (readyMessage.WasDeserializedCorrectly())
                 {
@@ -124,6 +132,11 @@ namespace BasisDidLink
                     }
 
                     string UUID = readyMessage.playerMetaDataMessage.playerUUID;
+                    if (socialTicket != null && (UUID == null || UUID.Length > 128 || !UUID.StartsWith("did:key:z", StringComparison.Ordinal)))
+                    {
+                        BasisServerHandleEvents.RejectWithReason(newPeer, "Social admission requires a client key identity.");
+                        return;
+                    }
                     Did playerDid = new Did(UUID);
                     if (BasisPlayerModeration.IsBanned(UUID))
                     {
@@ -155,6 +168,7 @@ namespace BasisDidLink
                         Did = playerDid,
                         Challenge = MakeChallenge(playerDid),
                         ReadyMessage = readyMessage,
+                        SocialJoinTicket = socialTicket,
                         Peer = newPeer
                     };
 
@@ -263,13 +277,22 @@ namespace BasisDidLink
                 DidUrlFragment Fragment = new DidUrlFragment(FragmentAsString);
                 Response response = new Response(Sig, Fragment);
 
-                if (AuthIdentity.TryGetValue(newPeer.Id, out OnAuth authIdentity))
+                if (AuthIdentity.TryGetValue(newPeer.Id, out OnAuth authIdentity) && Equals(authIdentity.Peer, newPeer) &&
+                    _verificationStarted.TryAdd(newPeer, 0))
                 {
                     Challenge challenge = authIdentity.Challenge;
                     bool isAuthenticated = await RecvChallengeResponse(response, challenge);
 
-                    if (isAuthenticated)
+                    if (isAuthenticated && AuthIdentity.TryGetValue(newPeer.Id, out OnAuth current) && Equals(current.Peer, newPeer))
                     {
+                        var social = NetworkServer.SocialAdmission;
+                        if (social != null && !await social.AdmitAsync(newPeer, authIdentity.SocialJoinTicket, authIdentity.Did.V,
+                            () => AuthIdentity.TryGetValue(newPeer.Id, out OnAuth live) && Equals(live.Peer, newPeer)))
+                        {
+                            BasisServerHandleEvents.RejectWithReason(newPeer, "Social admission denied or unavailable. Please request a new ticket.");
+                            return;
+                        }
+                        if (!AuthIdentity.TryGetValue(newPeer.Id, out current) || !Equals(current.Peer, newPeer)) return;
                         BasisServerHandleEvents.OnNetworkAccepted(newPeer, authIdentity.ReadyMessage, authIdentity.Did.V);
                     }
                     else
@@ -327,6 +350,7 @@ namespace BasisDidLink
                 return false;
             }
 
+            _verificationStarted.TryRemove(Entry.Peer, out _);
             ReleaseDid(Entry.Did);
             if (_timeouts.TryRemove(Id, out var cts))
             {

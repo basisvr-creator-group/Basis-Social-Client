@@ -37,6 +37,7 @@ public static class BasisNetworkPreloadManager
         public BasisTrackedBundleWrapper BundleWrapper;
         public bool IsReady;
         public DateTime PreloadStartUtc;
+        public long ConnectionGeneration;
     }
 
     /// <summary>
@@ -47,6 +48,7 @@ public static class BasisNetworkPreloadManager
     /// </summary>
     private static async Task HandlePreload(LocalLoadResource resource)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         string netId = resource.LoadedNetID;
         BasisDebug.Log($"PreloadManager: Beginning preload for {resource.CombinedURL} (NetID={netId})", BasisDebug.LogTag.Networking);
 
@@ -55,6 +57,7 @@ public static class BasisNetworkPreloadManager
             LoadResource = resource,
             IsReady = false,
             PreloadStartUtc = DateTime.UtcNow,
+            ConnectionGeneration = BasisNetworkResourceGate.Capture(),
         };
 
         PreloadedResources[netId] = preloaded;
@@ -126,6 +129,7 @@ public static class BasisNetworkPreloadManager
             // Do NOT create an AssetBundle here - the file is on disk and ready.
             // The normal load path will find it and load from disk when spawn signal arrives.
 
+            if (!BasisNetworkResourceGate.Allows(preloaded.ConnectionGeneration)) return;
             preloaded.BundleWrapper = wrapper;
             preloaded.IsReady = true;
 
@@ -145,6 +149,7 @@ public static class BasisNetworkPreloadManager
     /// </summary>
     public static async Task HandleSynchronizedPreload(LocalLoadResource resource)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         string netId = resource.LoadedNetID;
         BasisDebug.Log($"PreloadManager: Beginning synchronized preload for {resource.CombinedURL} (NetID={netId})", BasisDebug.LogTag.Networking);
 
@@ -174,6 +179,7 @@ public static class BasisNetworkPreloadManager
     /// </summary>
     public static async Task HandlePredownload(LocalLoadResource resource)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         await HandlePreload(resource);
         PreloadedResources.TryRemove(resource.LoadedNetID, out _);
     }
@@ -203,6 +209,7 @@ public static class BasisNetworkPreloadManager
     /// </summary>
     public static async Task HandleSpawnPreloaded(SpawnPreloadedMessage spawnMsg)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         string netId = spawnMsg.LoadedNetID;
 
         if (!PreloadedResources.TryRemove(netId, out PreloadedResource preloaded))
@@ -211,6 +218,7 @@ public static class BasisNetworkPreloadManager
             return;
         }
 
+        if (!BasisNetworkResourceGate.Allows(preloaded.ConnectionGeneration)) return;
         if (!preloaded.IsReady || preloaded.BundleWrapper == null)
         {
             BasisDebug.LogError($"PreloadManager: Received spawn signal for {netId} but resource was not ready");
@@ -222,6 +230,7 @@ public static class BasisNetworkPreloadManager
         if (preloaded.LoadResource.Mode == 1)
         {
             await UnloadAllSceneContent();
+            if (!BasisNetworkResourceGate.Allows(preloaded.ConnectionGeneration)) return;
         }
 
         BasisDebug.Log($"PreloadManager: Spawning preloaded resource {preloaded.LoadResource.CombinedURL} (NetID={netId})", BasisDebug.LogTag.Networking);

@@ -28,6 +28,8 @@ namespace Basis.Scripts.Networking
     {
         /// <summary>URL scheme registered with the OS. Change before building — not runtime-configurable.</summary>
         public const string DeepLinkScheme = "basisdemo";
+        public const string SocialDeepLinkScheme = "basis";
+        public static readonly string[] RegisteredSchemes = { DeepLinkScheme, SocialDeepLinkScheme };
         public static string Scheme => DeepLinkScheme + "://";
         public const string BundleUrlName = "org.basisvr." + DeepLinkScheme;
 
@@ -280,11 +282,11 @@ namespace Basis.Scripts.Networking
                 string dataPath = Application.dataPath.Replace('/', '\\');
                 if (!dataPath.EndsWith("_Data", StringComparison.OrdinalIgnoreCase)) return;
                 string exePath = dataPath.Substring(0, dataPath.Length - 5) + ".exe";
-                RegisterWindowsScheme(exePath);
+                foreach (string scheme in RegisteredSchemes) RegisterWindowsScheme(exePath, scheme);
 #elif UNITY_STANDALONE_LINUX
                 string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
                 if (string.IsNullOrEmpty(exePath)) return;
-                RegisterLinuxScheme(exePath);
+                foreach (string scheme in RegisteredSchemes) RegisterLinuxScheme(exePath, scheme);
 #endif
             }
             catch (Exception ex)
@@ -432,13 +434,13 @@ namespace Basis.Scripts.Networking
         [System.Runtime.InteropServices.DllImport("advapi32.dll")]
         private static extern int RegCloseKey(IntPtr hKey);
 
-        private static void RegisterWindowsScheme(string exePath)
+        private static void RegisterWindowsScheme(string exePath, string scheme)
         {
-            const string prefsKey = "__basis_dlDeepLinkScheme__";
+            string prefsKey = "__basis_dlscheme__" + scheme;
             IntPtr hkcu = new IntPtr(unchecked((int)0x80000001));
 
             string prevScheme = PlayerPrefs.GetString(prefsKey, string.Empty);
-            if (!string.IsNullOrEmpty(prevScheme) && prevScheme != DeepLinkScheme)
+            if (!string.IsNullOrEmpty(prevScheme) && prevScheme != scheme)
             {
                 if (RegDeleteTreeW(hkcu, $@"Software\Classes\{prevScheme}") == 0)
                     BasisDebug.Log($"[BasisDeepLink] Removed stale URL scheme {prevScheme}://");
@@ -447,27 +449,27 @@ namespace Basis.Scripts.Networking
             const int KEY_ALL_ACCESS = 0xF003F;
             const int REG_SZ = 1;
 
-            int ret1 = RegCreateKeyExW(hkcu, $@"Software\Classes\{DeepLinkScheme}", 0, IntPtr.Zero, 0, KEY_ALL_ACCESS, IntPtr.Zero, out IntPtr key1, out _);
-            if (ret1 != 0) { BasisDebug.LogError($"[BasisDeepLink] RegCreateKeyExW({DeepLinkScheme}) failed: {ret1}"); return; }
-            string proto = $"URL:{DeepLinkScheme} Protocol";
+            int ret1 = RegCreateKeyExW(hkcu, $@"Software\Classes\{scheme}", 0, IntPtr.Zero, 0, KEY_ALL_ACCESS, IntPtr.Zero, out IntPtr key1, out _);
+            if (ret1 != 0) { BasisDebug.LogError($"[BasisDeepLink] RegCreateKeyExW({scheme}) failed: {ret1}"); return; }
+            string proto = $"URL:{scheme} Protocol";
             RegSetValueExW(key1, "", 0, REG_SZ, proto, (proto.Length + 1) * 2);
             RegSetValueExW(key1, "URL Protocol", 0, REG_SZ, "", 2);
             RegCloseKey(key1);
 
-            int ret2 = RegCreateKeyExW(hkcu, $@"Software\Classes\{DeepLinkScheme}\shell\open\command", 0, IntPtr.Zero, 0, KEY_ALL_ACCESS, IntPtr.Zero, out IntPtr key2, out _);
+            int ret2 = RegCreateKeyExW(hkcu, $@"Software\Classes\{scheme}\shell\open\command", 0, IntPtr.Zero, 0, KEY_ALL_ACCESS, IntPtr.Zero, out IntPtr key2, out _);
             if (ret2 != 0) { BasisDebug.LogError($"[BasisDeepLink] RegCreateKeyExW(command) failed: {ret2}"); return; }
             string cmd = $"\"{exePath}\" \"%1\"";
             RegSetValueExW(key2, "", 0, REG_SZ, cmd, (cmd.Length + 1) * 2);
             RegCloseKey(key2);
 
-            PlayerPrefs.SetString(prefsKey, DeepLinkScheme);
+            PlayerPrefs.SetString(prefsKey, scheme);
             PlayerPrefs.Save();
-            BasisDebug.Log($"[BasisDeepLink] Registered {DeepLinkScheme}:// → {cmd}");
+            BasisDebug.Log($"[BasisDeepLink] Registered {scheme}:// → {cmd}");
         }
 #endif
 
 #if UNITY_STANDALONE_LINUX && !UNITY_EDITOR
-        private static void RegisterLinuxScheme(string exePath)
+        private static void RegisterLinuxScheme(string exePath, string scheme)
         {
             string desktopDir = System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -477,16 +479,16 @@ namespace Basis.Scripts.Networking
             string safeName = Application.productName.Replace("\n", "").Replace("\r", "");
             string safeExe = exePath.Replace("\n", "").Replace("\r", "");
 
-            string desktopFile = System.IO.Path.Combine(desktopDir, $"{DeepLinkScheme}-handler.desktop");
+            string desktopFile = System.IO.Path.Combine(desktopDir, $"{scheme}-handler.desktop");
             System.IO.File.WriteAllText(desktopFile,
                 "[Desktop Entry]\n" +
                 $"Name={safeName}\n" +
                 $"Exec=\"{safeExe}\" %u\n" +
                 "Type=Application\n" +
                 "NoDisplay=true\n" +
-                $"MimeType=x-scheme-handler/{DeepLinkScheme};\n");
+                $"MimeType=x-scheme-handler/{scheme};\n");
 
-            RunProcess("xdg-mime", $"default {DeepLinkScheme}-handler.desktop x-scheme-handler/{DeepLinkScheme}");
+            RunProcess("xdg-mime", $"default {scheme}-handler.desktop x-scheme-handler/{scheme}");
             RunProcess("update-desktop-database", desktopDir);
         }
 

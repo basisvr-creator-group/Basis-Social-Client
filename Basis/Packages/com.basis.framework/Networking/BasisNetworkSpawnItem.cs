@@ -21,6 +21,7 @@ public static class BasisNetworkSpawnItem
     private static CancellationTokenSource _loadCts = new CancellationTokenSource();
     public static bool RequestSceneLoad(string UnlockPassword, string CombinedURL, bool Persist, bool Admin, out LocalLoadResource localLoadResource, byte loadStrategy = 0)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) { localLoadResource = new LocalLoadResource(); return false; }
         if (string.IsNullOrEmpty(CombinedURL) || string.IsNullOrEmpty(UnlockPassword))
         {
             BasisDebug.Log("Invalid parameters for scene load request.", BasisDebug.LogTag.Networking);
@@ -53,6 +54,7 @@ public static class BasisNetworkSpawnItem
 
     public static bool RequestGameObjectLoad(string UnlockPassword, string CombinedURL, Vector3 Position, Quaternion Rotation, Vector3 Scale, bool Persistent, bool Admin, bool ModifysScale, out LocalLoadResource LocalLoadResource, byte loadStrategy = 0)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) { LocalLoadResource = new LocalLoadResource(); return false; }
         if (string.IsNullOrEmpty(CombinedURL) || string.IsNullOrEmpty(UnlockPassword))
         {
             BasisDebug.Log("Invalid parameters for GameObject load request.", BasisDebug.LogTag.Networking);
@@ -159,7 +161,11 @@ public static class BasisNetworkSpawnItem
 
     public static async Task<Scene> SpawnScene(LocalLoadResource localLoadResource)
     {
-        _loadCts.Token.ThrowIfCancellationRequested();
+        // Reset replaces the source. Keep the token belonging to this request across every await.
+        var loadToken = _loadCts.Token;
+        var generation = BasisNetworkResourceGate.Capture();
+        loadToken.ThrowIfCancellationRequested();
+        if (!BasisNetworkResourceGate.Allows(generation)) throw new OperationCanceledException(loadToken);
         BasisDebug.Log($"Spawning scene with NetID: {localLoadResource.LoadedNetID}", BasisDebug.LogTag.Networking);
 
         BasisLoadableBundle loadBundle = new BasisLoadableBundle
@@ -184,8 +190,9 @@ public static class BasisNetworkSpawnItem
         BasisSceneLoad.progressCallback.OnProgressReport += ForwardPendingProgress;
         try
         {
-            Scene scene = await BasisSceneLoad.LoadSceneAssetBundle(loadBundle);
-            _loadCts.Token.ThrowIfCancellationRequested();
+            Scene scene = await LoadSceneForSessionAsync(
+                token => BasisSceneLoad.LoadSceneAssetBundle(loadBundle, MakeSceneActiveScene: false, cancellationToken: token),
+                loadToken, generation);
 
             if (!scene.IsValid())
             {
@@ -230,6 +237,29 @@ public static class BasisNetworkSpawnItem
         }
     }
 
+    // The Unity scene activation tail is not cancellable. Validate again before committing it,
+    // and only unload a returned scene that this operation added (never a pre-existing world).
+    private static async Task<Scene> LoadSceneForSessionAsync(
+        Func<CancellationToken, Task<Scene>> load, CancellationToken token, long generation)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!BasisNetworkResourceGate.Allows(generation)) throw new OperationCanceledException(token);
+        var existingScenes = new HashSet<Scene>();
+        for (int i = 0; i < SceneManager.sceneCount; i++) existingScenes.Add(SceneManager.GetSceneAt(i));
+        var scene = await load(token);
+        if (token.IsCancellationRequested || !BasisNetworkResourceGate.Allows(generation))
+        {
+            if (scene.IsValid() && scene.isLoaded && !existingScenes.Contains(scene))
+            {
+                var unload = SceneManager.UnloadSceneAsync(scene);
+                if (unload != null) while (!unload.isDone) await Task.Yield();
+            }
+            throw new OperationCanceledException(token);
+        }
+        if (scene.IsValid() && scene.isLoaded) SceneManager.SetActiveScene(scene);
+        return scene;
+    }
+
     public static void SceneTraverseNetIdAssign(Scene scene, LocalLoadResource localLoadResource)
     {
         GameObject[] Root = scene.GetRootGameObjects();
@@ -272,6 +302,10 @@ public static class BasisNetworkSpawnItem
     }
     public static async Task<GameObject> SpawnGameObject(LocalLoadResource localLoadResource, Selector Selector)
     {
+        var loadToken = _loadCts.Token;
+        var generation = BasisNetworkResourceGate.Capture();
+        loadToken.ThrowIfCancellationRequested();
+        if (!BasisNetworkResourceGate.Allows(generation)) throw new OperationCanceledException(loadToken);
         BasisDebug.Log($"Spawning GameObject with NetID: {localLoadResource.LoadedNetID}", BasisDebug.LogTag.Networking);
 
         BasisLoadableBundle loadBundle = new BasisLoadableBundle
@@ -301,12 +335,21 @@ public static class BasisNetworkSpawnItem
         var scale = new Vector3(localLoadResource.ScaleX, localLoadResource.ScaleY, localLoadResource.ScaleZ);
         try
         {
-            GameObject reference = await BasisLoadHandler.LoadGameObjectBundle(BasisDeviceManagement.Instance.CreationGameobject, loadBundle, true, BasisProgressReport, _loadCts.Token,
+            GameObject reference = await BasisLoadHandler.LoadGameObjectBundle(BasisDeviceManagement.Instance.CreationGameobject, loadBundle, true, BasisProgressReport, loadToken,
                 position,
                 rotation,
                 scale,
                 localLoadResource.ModifyScale, Selector, BasisDeviceManagement.Instance.transform);
 
+            if (loadToken.IsCancellationRequested || !BasisNetworkResourceGate.Allows(generation))
+            {
+                if (reference != null)
+                {
+                    reference.SetActive(false);
+                    UnityEngine.Object.Destroy(reference);
+                }
+                throw new OperationCanceledException(loadToken);
+            }
             if (reference == null)
             {
                 BasisDebug.LogError($"Unable to load content from {localLoadResource.CombinedURL}. This may be caused by the bundle not having a build for the current platform ({UnityEngine.Application.platform}). Check earlier log messages for details.", BasisDebug.LogTag.Networking);

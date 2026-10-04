@@ -100,6 +100,9 @@ namespace SteamAudio
         EventWaitHandle mSimulationThreadWaitHandle = null;
         bool mStopSimulationThread = false;
         bool mSimulationCompleted = false;
+        // Published before waking the worker and cleared only after its final
+        // native access. ThreadState can still report asleep after a wake was sent.
+        volatile bool mReflectionsInFlight = false;
 
         // Direct simulation (occlusion ray casting) runs on its own worker, one
         // frame behind the main thread. See ApplyInstance for the pipeline.
@@ -160,6 +163,7 @@ namespace SteamAudio
         int mSourceCoreCapacity = 0;
         bool mShuttingDown = false;
         static readonly Queue<Source> sPendingSourceRelease = new Queue<Source>();
+        readonly Queue<(ProbeBatch batch, bool add)> mPendingProbeChanges = new Queue<(ProbeBatch, bool)>();
 
         float mSimulationUpdateTimeElapsed = 0.0f;
         bool mSceneCommitRequired = false;
@@ -856,9 +860,10 @@ namespace SteamAudio
                 mDirectInFlight = false;
             }
 
-            // Worker is idle now, so any native source handle it referenced this
-            // cycle is safe to free (release is deferred from SteamAudioSource.OnDestroy).
+            // Direct is idle; the drain also checks the reflections worker and
+            // invalidates staged snapshots before releasing destroyed sources.
             DrainPendingSourceReleases();
+            DrainPendingProbeChanges();
 
             if (reapNow)
             {
@@ -900,7 +905,7 @@ namespace SteamAudio
             // RunDirect/RunReflections. An unconditional per-frame Commit re-walks
             // simulator state natively for nothing on the vast majority of frames.
             if ((mSceneCommitRequired || mSimulatorCommitRequired) &&
-                mSimulationThread.ThreadState == ThreadState.WaitSleepJoin)
+                !mReflectionsInFlight)
             {
                 using (sMarkerCommit.Auto())
                 {
@@ -1110,7 +1115,7 @@ namespace SteamAudio
                 mReflKickPending = true;
             }
 
-            if (mSimulationThread.ThreadState == ThreadState.WaitSleepJoin)
+            if (!mReflectionsInFlight)
             {
                 using var reflectionsScope = sMarkerReflections.Auto();
                 if (mSimulationCompleted)
@@ -1152,7 +1157,7 @@ namespace SteamAudio
                             // Builds only — no iplSourceSetInputs here. The native call
                             // moves to RunSimulationInternal (mSimulationThread), mirroring
                             // the direct pipeline: main thread stages a snapshot while the
-                            // worker is proven idle (ThreadState gate around this whole
+                            // worker is proven idle (completion gate around this whole
                             // block), the worker owns SetInputs -> Run -> GetOutputs.
                             EnsureReflectionsSnapshotCapacity(srcTotal);
 
@@ -1236,6 +1241,7 @@ namespace SteamAudio
                 }
                 else
                 {
+                    mReflectionsInFlight = true;
                     mSimulationThreadWaitHandle.Set();
                 }
             }
@@ -1356,7 +1362,16 @@ namespace SteamAudio
                 if (mStopSimulationThread)
                     break;
 
-                RunSimulationInternal();
+                try
+                {
+                    RunSimulationInternal();
+                }
+                finally
+                {
+                    // Release publication pairs with the main-thread volatile read:
+                    // outputs and native handle use are complete before reuse/free.
+                    mReflectionsInFlight = false;
+                }
             }
         }
 
@@ -1433,6 +1448,7 @@ namespace SteamAudio
                 Singleton.mStopSimulationThread = true;
                 Singleton.mSimulationThreadWaitHandle.Set();
                 Singleton.mSimulationThread.Join();
+                Singleton.mReflectionsInFlight = false;
             }
 
             if (Singleton.mDirectThread != null)
@@ -1446,6 +1462,7 @@ namespace SteamAudio
 
             // Worker joined — free any handles queued for deferred release.
             Singleton.DrainPendingSourceReleases();
+            Singleton.DrainPendingProbeChanges();
 
 #if STEAMAUDIO_ENABLED
             Singleton.DisposeTransformAndPoseBuffers();
@@ -1517,6 +1534,7 @@ namespace SteamAudio
                 Singleton.mStopSimulationThread = true;
                 Singleton.mSimulationThreadWaitHandle.Set();
                 Singleton.mSimulationThread.Join();
+                Singleton.mReflectionsInFlight = false;
             }
 
             if (Singleton.mDirectThread != null)
@@ -1531,8 +1549,9 @@ namespace SteamAudio
             // Worker joined — free queued handles and drop the stale snapshot so the
             // next ApplyInstance rebuilds against the fresh simulator/sources.
             Singleton.DrainPendingSourceReleases();
+            Singleton.DrainPendingProbeChanges();
             Singleton.mSnapCount = 0;
-            Singleton.mReflSnapCount = 0;
+            Singleton.InvalidateReflectionsSnapshot();
 
             RemoveAllDynamicObjects(force: true);
             RemoveAllAdditiveScenes();
@@ -1645,6 +1664,9 @@ namespace SteamAudio
             Singleton.mSimulator = new Simulator(Singleton.mContext, simulationSettings);
 
             Singleton.mStopSimulationThread = false;
+            Singleton.mSimulationThreadWaitHandle.Reset();
+            Singleton.mSimulationCompleted = false;
+            Singleton.mReflectionsInFlight = false;
             Singleton.mSimulationThread = new Thread(Singleton.RunSimulation);
             Singleton.mSimulationThread.Start();
 
@@ -1756,7 +1778,7 @@ namespace SteamAudio
 
         // Grows the reflections worker snapshot buffers. Only called from the input
         // staging slice in ApplyInstance, which — like the direct snapshot build —
-        // only runs while mSimulationThread is proven idle (the ThreadState gate
+        // only runs while mSimulationThread is proven idle (the completion gate
         // around the whole reflections block), so a reallocation can never race the
         // worker reading them.
         private void EnsureReflectionsSnapshotCapacity(int required)
@@ -1773,15 +1795,63 @@ namespace SteamAudio
             mReflOutBuf = new SimulationOutputs[newCap];
         }
 
-        // Frees native source handles queued by SteamAudioSource.OnDestroy. Must be
-        // called only when the direct worker is idle (top of ApplyInstance after the
-        // reap WaitOne, or after the worker thread is joined on shutdown/reinit).
+        // Both workers and future staged runs may own a destroyed source's handle.
+        // Never wait on the main thread: defer until both workers have completed.
         private void DrainPendingSourceReleases()
         {
+            if (sPendingSourceRelease.Count == 0 || mDirectInFlight || mReflectionsInFlight)
+                return;
+
+            InvalidateReflectionsSnapshot();
             while (sPendingSourceRelease.Count > 0)
             {
                 Source s = sPendingSourceRelease.Dequeue();
                 if (s != null) s.Release();
+            }
+        }
+
+        private void InvalidateReflectionsSnapshot()
+        {
+            // Inputs are sliced across frames, so even an idle worker can have a
+            // staged pointer to a source that has since been destroyed. Discard the
+            // entire staged pass (including entries beyond mReflSnapCount) before
+            // freeing anything; the next pass rebuilds from the live source list.
+            if (mReflSnapHandles != null)
+                Array.Clear(mReflSnapHandles, 0, mReflSnapHandles.Length);
+            if (mReflSnapSources != null)
+                Array.Clear(mReflSnapSources, 0, mReflSnapSources.Length);
+            mReflSnapCount = 0;
+            mReflInputCursor = 0;
+            mReflOutputCursor = -1;
+            mReflInputsStaged = false;
+            mSimulationCompleted = false;
+        }
+
+        // Probe membership cannot change during either native simulation. Retain
+        // each queued batch because its scene component may be destroyed first.
+        public static bool TryDeferProbeBatchChange(Simulator simulator, ProbeBatch batch, bool add)
+        {
+            SteamAudioManager manager = Singleton;
+            if (manager == null || manager.mShuttingDown || !ReferenceEquals(simulator, manager.mSimulator))
+                return false;
+            manager.mPendingProbeChanges.Enqueue((new ProbeBatch(batch), add));
+            return true;
+        }
+
+        private void DrainPendingProbeChanges()
+        {
+            if (mPendingProbeChanges.Count == 0 || mDirectInFlight || mReflectionsInFlight)
+                return;
+            InvalidateReflectionsSnapshot();
+            // Surviving sources can cache pathing pointers into the unloaded scene.
+            // Rebuild those inputs before either worker receives another snapshot.
+            for (int i = 0; i < CurrentArraySource; i++)
+                if (mSources[i] != null) mSources[i].MarkCacheDirty();
+            while (mPendingProbeChanges.Count > 0)
+            {
+                var change = mPendingProbeChanges.Dequeue();
+                try { mSimulator.ApplyProbeBatchChange(change.batch, change.add); }
+                finally { change.batch.Release(); }
             }
         }
 
@@ -1793,7 +1863,7 @@ namespace SteamAudio
             if (source == null) return false;
 
             SteamAudioManager s = Singleton;
-            if (s == null || s.mShuttingDown || !UseThreadedDirectPipeline)
+            if (s == null || s.mShuttingDown)
                 return false;
 
             sPendingSourceRelease.Enqueue(source);

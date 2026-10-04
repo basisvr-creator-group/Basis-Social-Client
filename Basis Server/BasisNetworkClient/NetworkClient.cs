@@ -14,7 +14,7 @@ public class NetworkClient
     /// <param name="IP"></param>
     /// <param name="port"></param>
     /// <param name="ReadyMessage"></param>
-    public NetPeer StartClient(string IP, int port, ReadyMessage ReadyMessage, byte[] AuthenticationMessage, Configuration Configuration, bool manualMode = false)
+    public NetPeer StartClient(string IP, int port, ReadyMessage ReadyMessage, byte[] AuthenticationMessage, Configuration Configuration, bool manualMode = false, string socialJoinTicket = null)
     {
         if (IsInUse == false)
         {
@@ -30,6 +30,7 @@ public class NetworkClient
             BytesMessage AuthBytes = new BytesMessage();
             AuthBytes.Serialize(Writer, AuthenticationMessage);
             ReadyMessage.Serialize(Writer);
+            BasisSocialJoinTicket.Write(Writer, socialJoinTicket);
             peer = client.Connect(IP, port, Writer);
             IsInUse = true;
             return peer;

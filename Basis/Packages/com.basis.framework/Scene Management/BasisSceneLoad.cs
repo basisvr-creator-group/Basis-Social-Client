@@ -17,7 +17,7 @@ namespace Basis.Scripts.Drivers
         /// <param name="spawnPlayerOnSceneLoad">If true, will spawn player after loading.</param>
         /// <param name="mode">Scene load mode (Additive or Single).</param>
         /// <param name="progress">Optional progress reporter (0-1).</param>
-        public static async Task LoadSceneAddressables(string sceneToLoad, bool spawnPlayerOnSceneLoad = true, LoadSceneMode mode = LoadSceneMode.Additive)
+        public static async Task<Scene> LoadSceneAddressables(string sceneToLoad, bool spawnPlayerOnSceneLoad = true, LoadSceneMode mode = LoadSceneMode.Additive)
         {
             SetIfPlayerShouldSpawnOnSceneLoad(spawnPlayerOnSceneLoad);
             BasisDebug.Log("Loading Scene " + sceneToLoad, BasisDebug.LogTag.Event);
@@ -40,6 +40,7 @@ namespace Basis.Scripts.Drivers
             await handle.Task;
             progressCallback.ReportProgress(UUID, 100f, $"Loaded scene {sceneToLoad}");
             BasisDebug.Log($"Loaded Scene {sceneToLoad}", BasisDebug.LogTag.Event);
+            return handle.Result.Scene;
         }
 
         private static string FormatBytes(long bytes)
@@ -58,11 +59,11 @@ namespace Basis.Scripts.Drivers
         /// remote but can be used local.
         /// </summary>
         /// <returns></returns>
-        public static async Task<Scene> LoadSceneAssetBundle(BasisLoadableBundle BasisLoadableBundle, bool SpawnPlayerOnSceneLoad = true, bool MakeSceneActiveScene = true)
+        public static async Task<Scene> LoadSceneAssetBundle(BasisLoadableBundle BasisLoadableBundle, bool SpawnPlayerOnSceneLoad = true, bool MakeSceneActiveScene = true, CancellationToken cancellationToken = default)
         {
             SetIfPlayerShouldSpawnOnSceneLoad(SpawnPlayerOnSceneLoad);
             BasisDebug.Log("Loading Scene ", BasisDebug.LogTag.Scene);
-            Scene Scene = await BasisLoadHandler.LoadSceneBundle(MakeSceneActiveScene, BasisLoadableBundle, progressCallback, new CancellationToken());
+            Scene Scene = await BasisLoadHandler.LoadSceneBundle(MakeSceneActiveScene, BasisLoadableBundle, progressCallback, cancellationToken);
             BasisDebug.Log("Loaded Scene ", BasisDebug.LogTag.Scene);
             return Scene;
         }

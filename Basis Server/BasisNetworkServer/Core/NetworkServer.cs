@@ -76,6 +76,7 @@ public static class NetworkServer
 
     public static IAuth Auth;
     public static IAuthIdentity AuthIdentity;
+    public static Basis.Network.Server.Social.BasisSocialAdmission SocialAdmission { get; private set; }
     public static int HighQualityLength;
     #region Server Entry Point
 
@@ -83,6 +84,7 @@ public static class NetworkServer
     {
         StopServer();
         Configuration = configuration;
+        SocialAdmission = Basis.Network.Server.Social.BasisSocialAdmission.FromEnvironment(configuration);
 
         // Rejoin-only lockdown means "the players here right now" — meaningless after a restart, and a
         // persisted RejoinOnly would boot with an empty snapshot and lock everyone out. Reset to Normal.
@@ -114,6 +116,8 @@ public static class NetworkServer
 
     public static void StopServer()
     {
+        SocialAdmission?.Dispose();
+        SocialAdmission = null;
         if (Server == null) return;
         try
         {

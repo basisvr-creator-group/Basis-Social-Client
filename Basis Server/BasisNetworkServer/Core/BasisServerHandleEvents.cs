@@ -361,6 +361,7 @@ namespace BasisServerHandle
                 }
             }
 
+            NetworkServer.SocialAdmission?.PeerLeft(peer);
             NetworkServer.AuthIdentity.RemoveConnection(id, peer);
 
             // A predecessor's disconnect can land after a reconnect has already taken the same id.

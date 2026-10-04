@@ -425,6 +425,7 @@ public static class BasisNetworkGenericMessages
     
     public static async Task LoadResourceMessage(NetPacketReader reader, DeliveryMethod Method)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         LocalLoadResource LocalLoadResource = new LocalLoadResource();
         LocalLoadResource.Deserialize(reader);
 
@@ -470,6 +471,7 @@ public static class BasisNetworkGenericMessages
     /// </summary>
     public static async Task SpawnPreloadedMessage(NetPacketReader reader, DeliveryMethod Method)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         SpawnPreloadedMessage spawnMsg = new SpawnPreloadedMessage();
         spawnMsg.Deserialize(reader);
         try
@@ -483,6 +485,7 @@ public static class BasisNetworkGenericMessages
     }
     public static async Task UnloadResourceMessage(NetPacketReader reader, DeliveryMethod Method)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return;
         UnLoadResource UnLoadResource = new UnLoadResource();
         UnLoadResource.Deserialize(reader);
         switch (UnLoadResource.Mode)
@@ -504,6 +507,7 @@ public static class BasisNetworkGenericMessages
     }
     public static Task ModifyResourceMessage(NetPacketReader reader, DeliveryMethod Method)
     {
+        if (!BasisNetworkResourceGate.Allows(BasisNetworkResourceGate.Capture())) return Task.CompletedTask;
         ModifyResource modifyResource = new ModifyResource();
         modifyResource.Deserialize(reader);
         // Apply the server-authoritative static/locked state to the registry record + live object.

@@ -2,6 +2,7 @@
   "dependencies": {
     "com.github.homuler.mediapipe": "file:com.github.homuler.mediapipe-0.16.3.tgz",
     "com.llealloo.audiolink": "https://github.com/llealloo/audiolink.git?path=Packages/com.llealloo.audiolink#3.1.2",
+    "com.netpyoung.webp": "https://github.com/netpyoung/unity.webp.git?path=unity_project/Assets/unity.webp#ff053e8d940fcb60d2b08ce47b7996c466d71dcc",
     "com.unity.2d.sprite": "1.0.0",
     "com.unity.addressables": "2.9.1",
     "com.unity.animation.rigging": "1.4.1",

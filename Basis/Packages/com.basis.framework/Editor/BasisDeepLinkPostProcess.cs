@@ -15,15 +15,18 @@ namespace Basis.Editor
         [PostProcessBuild(50)]
         public static void OnPostprocessBuild(BuildTarget target, string buildPath)
         {
-            if (target == BuildTarget.iOS)
-                PatchInfoPlist(Path.Combine(buildPath, "Info.plist"), GetScheme());
-            else if (target == BuildTarget.StandaloneOSX)
-                PatchInfoPlist(Path.Combine(buildPath, "Contents", "Info.plist"), GetScheme());
+            foreach (string scheme in BasisDeepLinkProvider.RegisteredSchemes)
+            {
+                if (target == BuildTarget.iOS)
+                    PatchInfoPlist(Path.Combine(buildPath, "Info.plist"), scheme);
+                else if (target == BuildTarget.StandaloneOSX)
+                    PatchInfoPlist(Path.Combine(buildPath, "Contents", "Info.plist"), scheme);
+            }
         }
 
         private static void PatchInfoPlist(string plistPath, string scheme)
         {
-            string bundleUrlName = BasisDeepLinkProvider.BundleUrlName;
+            string bundleUrlName = "org.basisvr." + scheme;
             if (!File.Exists(plistPath)) return;
 
             var doc = new XmlDocument();
@@ -110,9 +113,8 @@ namespace Basis.Editor
 
         public void OnPostGenerateGradleAndroidProject(string gradlePath)
         {
-            string scheme = BasisDeepLinkProvider.DeepLinkScheme;
-            PatchAndroidManifest(
-                Path.Combine(gradlePath, "src", "main", "AndroidManifest.xml"), scheme);
+            foreach (string scheme in BasisDeepLinkProvider.RegisteredSchemes)
+                PatchAndroidManifest(Path.Combine(gradlePath, "src", "main", "AndroidManifest.xml"), scheme);
         }
 
         private static void PatchAndroidManifest(string manifestPath, string scheme)

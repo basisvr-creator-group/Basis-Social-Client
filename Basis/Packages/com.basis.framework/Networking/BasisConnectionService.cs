@@ -100,7 +100,7 @@ namespace Basis.Scripts.Networking
         /// before invoking this; both the Servers panel Connect button and the
         /// <c>--connection=</c> CLI bootstrap call this directly.
         /// </summary>
-        public static async Task ConnectAsync(ServerDirectoryEntry entry, string userName, bool isHostMode = false)
+        public static async Task ConnectAsync(ServerDirectoryEntry entry, string userName, bool isHostMode = false, Func<CancellationToken, Task<string>> socialTicketFactory = null, CancellationToken cancellationToken = default, Func<CancellationToken, Task> prepareWorld = null)
         {
             if (_connectInProgress)
             {
@@ -158,7 +158,9 @@ namespace Basis.Scripts.Networking
                 Task<string> resolveTask = isHostMode
                     ? Task.FromResult(address)
                     : ResolveConnectionAddressAsync(entry.Target, address);
-                await LoadDefaultAssetBundleAsync();
+                if (prepareWorld == null) await LoadDefaultAssetBundleAsync();
+                else await prepareWorld(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
                 string resolvedIp = await resolveTask;
                 if (!string.IsNullOrEmpty(resolvedIp) && resolvedIp != address)
                 {
@@ -166,11 +168,18 @@ namespace Basis.Scripts.Networking
                     BasisNetworkManagement.Ip = resolvedIp;
                 }
 
-                _lastTarget = isHostMode ? null : entry;
-                _lastUserName = isHostMode ? null : BasisLocalPlayer.Instance.DisplayName;
+                _lastTarget = isHostMode || socialTicketFactory != null ? null : entry;
+                _lastUserName = isHostMode || socialTicketFactory != null ? null : BasisLocalPlayer.Instance.DisplayName;
 
                 ReportConnectionProgress(90f, BasisLocalization.Get("menu.servers.status.connecting"));
-                BasisNetworkManagement.Connect();
+                if (socialTicketFactory == null) BasisNetworkManagement.Connect();
+                else
+                {
+                    string ticket = await socialTicketFactory(cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    BasisNetworkConnection.Connect(BasisNetworkManagement.Port, BasisNetworkManagement.Ip, BasisNetworkManagement.Password,
+                        false, BasisNetworkManagement.NetworkStackId, ticket, cancellationToken);
+                }
                 if (BasisDesktopEye.Instance != null)
                 {
                     BasisDesktopEye.Instance.LockEye();
@@ -178,6 +187,11 @@ namespace Basis.Scripts.Networking
                 // The loading bar stays up: the handshake is still in flight on the client task, and
                 // the watchdog closes the bar once the server answers (or times the attempt out).
                 BasisNetworkConnectionWatchdog.NotifyHandshakeStarted();
+            }
+            catch (OperationCanceledException) when (socialTicketFactory != null)
+            {
+                BasisNetworkConnectionWatchdog.NotifyConnectAborted();
+                throw;
             }
             catch (TimeoutException tex)
             {
@@ -188,6 +202,7 @@ namespace Basis.Scripts.Networking
             catch (Exception ex)
             {
                 BasisNetworkConnectionWatchdog.NotifyConnectAborted();
+                if (socialTicketFactory != null) throw;
                 ReportConnectionError(BasisLocalization.Get("menu.servers.error.connectFailed"));
                 BasisDebug.LogError(ex.ToString());
             }

@@ -305,7 +305,8 @@
       "depth": 0,
       "source": "embedded",
       "dependencies": {
-        "com.unity.ugui": "2.0.0"
+        "com.unity.ugui": "2.0.0",
+        "com.netpyoung.webp": "0.3.22"
       }
     },
     "com.basis.soundpack": {
@@ -375,6 +376,13 @@
       "depth": 0,
       "source": "embedded",
       "dependencies": {}
+    },
+    "com.netpyoung.webp": {
+      "version": "https://github.com/netpyoung/unity.webp.git?path=unity_project/Assets/unity.webp#ff053e8d940fcb60d2b08ce47b7996c466d71dcc",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "ff053e8d940fcb60d2b08ce47b7996c466d71dcc"
     },
     "com.steam.steamaudio": {
       "version": "file:com.steam.steamaudio",

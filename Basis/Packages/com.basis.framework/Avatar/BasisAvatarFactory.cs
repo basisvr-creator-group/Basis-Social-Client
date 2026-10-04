@@ -106,14 +106,15 @@ namespace Basis.Scripts.Avatar
         /// <param name="BasisLoadableBundle">The bundle containing avatar metadata.</param>
         /// <param name="Position">Spawn position for the avatar.</param>
         /// <param name="Rotation">Spawn rotation for the avatar.</param>
-        public static async Task LoadAvatarLocal(BasisLocalPlayer Player, byte Mode, BasisLoadableBundle BasisLoadableBundle, Vector3 Position, Quaternion Rotation)
+        public static async Task LoadAvatarLocal(BasisLocalPlayer Player, byte Mode, BasisLoadableBundle BasisLoadableBundle, Vector3 Position, Quaternion Rotation, CancellationToken cancellationToken = default)
         {
             if (Player == null)
             {
                 return;
             }
 
-            var token = ReplacePlayerLoadToken(Player);
+            cancellationToken.ThrowIfCancellationRequested();
+            var token = ReplacePlayerLoadToken(Player, cancellationToken);
 
             if (string.IsNullOrEmpty(BasisLoadableBundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation))
             {
@@ -129,9 +130,9 @@ namespace Basis.Scripts.Avatar
             {
                 RemoveOldAvatarAndLoadFallback(Player, Position, Rotation);
             }
+            GameObject Output = null;
             try
             {
-                GameObject Output = null;
                 // Local-only: harvested by ContentPolice during the load walk and consumed by
                 // the local avatar driver during calibration. Keeping it on the stack means
                 // it's GC'd as soon as the load returns; nothing persists on BasisAvatar.
@@ -208,10 +209,23 @@ namespace Basis.Scripts.Avatar
             }
             finally
             {
+                // Cancellation can arrive after instantiation but before the swap. The candidate
+                // owns a bundle reservation even though it never became the player's avatar.
+                if (Mode != 2 && Output != null && (Player.BasisAvatar == null || Player.BasisAvatar.gameObject != Output))
+                {
+                    GameObject.Destroy(Output);
+                    if (Mode == 0 && !string.IsNullOrEmpty(BasisLoadableBundle.ReservedWrapperKey))
+                        _ = ReleaseUninstalledBundleAsync(BasisLoadableBundle);
+                }
                 ClearPlayerLoadToken(Player, token);
             }
         }
 
+        private static async Task ReleaseUninstalledBundleAsync(BasisLoadableBundle bundle)
+        {
+            try { await BasisLoadHandler.RequestDeIncrementOfBundle(bundle); }
+            catch (Exception error) { BasisDebug.LogError("Could not release an uninstalled avatar bundle: " + error.GetType().Name); }
+        }
 
         /// <summary>
         /// Loads an avatar for a <see cref="BasisRemotePlayer"/> with similar logic to <see cref="LoadAvatarLocal"/>.
@@ -473,6 +487,10 @@ namespace Basis.Scripts.Avatar
                     remote.LastPerformanceInfo = trimInfo;
                 }
                 SetupPlayerAvatar(Player, avatar, isFallback: false, headChop: headChop);
+            }
+            else
+            {
+                throw new InvalidOperationException("Avatar content has no BasisAvatar component.");
             }
         }
 
@@ -922,7 +940,7 @@ namespace Basis.Scripts.Avatar
         // longer a UnityEngine.Object, so the previous EntityId key is unavailable.
         private static readonly ConcurrentDictionary<IBasisPlayer, CancellationTokenSource> _playerLoadCts = new();
 
-        private static CancellationToken ReplacePlayerLoadToken(IBasisPlayer player)
+        private static CancellationToken ReplacePlayerLoadToken(IBasisPlayer player, CancellationToken cancellationToken = default)
         {
             // Cancel & dispose previous request (if any)
             if (_playerLoadCts.TryRemove(player, out var old))
@@ -931,7 +949,7 @@ namespace Basis.Scripts.Avatar
                 old.Dispose();
             }
 
-            var cts = new CancellationTokenSource();
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _playerLoadCts[player] = cts;
             return cts.Token;
         }

@@ -10,6 +10,7 @@ using Basis.Scripts.TransformBinders.BoneControl;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using TMPro;
 
 namespace Basis.BasisUI
 {
@@ -61,6 +62,8 @@ namespace Basis.BasisUI
         private PanelButton _moveButton;
         private PanelButton _resetButton;
         private PanelButton _searchButton;
+        private PanelButton _closeButton;
+        private bool _inHeader;
         private string _panelKey;
         private Vector3 _defaultLocalPosition;
 
@@ -161,7 +164,7 @@ namespace Basis.BasisUI
         }
 
         // Compact icon-only metrics for the overlay strip; the header variant keeps the Close
-        // button's own 130x50 so the three read as one row.
+        // button's 50-unit height; labels may grow wider with localization.
         private const float OverlayButtonWidth = 62f;
         private const float OverlayButtonHeight = 50f;
         private const float OverlayMargin = 14f;
@@ -260,6 +263,17 @@ namespace Basis.BasisUI
             _resetButton = reset;
             _searchButton = search;
             _panelKey = panelKey;
+            _inHeader = panel.Descriptor != null && panel.Descriptor.HasHeader;
+            if (_inHeader)
+            {
+                // The authored Close control remains the last header child; the controls built
+                // by Attach are inserted immediately before it.
+                Transform header = panel.Descriptor.Header;
+                if (header.childCount > 0)
+                    _closeButton = header.GetChild(header.childCount - 1).GetComponent<PanelButton>();
+            }
+            RefreshHeaderLanguage();
+            BasisLocalization.OnLanguageChanged += RefreshHeaderLanguage;
             _defaultLocalPosition = panel.Data.PanelPosition;
 
             if (reset != null)
@@ -278,6 +292,32 @@ namespace Basis.BasisUI
             _bootModeHooked = true;
         }
 
+        private void RefreshHeaderLanguage()
+        {
+            SetHeaderLabel(_moveButton, MoveKey, MoveTooltipKey);
+            SetHeaderLabel(_resetButton, ResetKey, ResetTooltipKey);
+            SetHeaderLabel(_searchButton, SearchKey, SearchTooltipKey);
+            if (_closeButton != null)
+                SetHeaderLabel(_closeButton, BasisMenuVirtualKeyboardPanel.CloseKey, null);
+            if (_inHeader && _panel != null)
+                LayoutRebuilder.MarkLayoutForRebuild(_panel.Descriptor.Header);
+        }
+
+        private void SetHeaderLabel(PanelButton button, string titleKey, string tooltipKey)
+        {
+            if (button == null) return;
+            string title = _inHeader ? BasisLocalization.Get(titleKey) : string.Empty;
+            button.Descriptor.SetTitle(title);
+            if (tooltipKey != null) button.Descriptor.SetTooltip(BasisLocalization.Get(tooltipKey));
+            if (!_inHeader || button.Descriptor.TitleLabel == null) return;
+            var label = button.Descriptor.TitleLabel;
+            label.textWrappingMode = TextWrappingModes.NoWrap;
+            // Close prefab: 25-unit icon, 5-unit gap, 20 units of inset. Keep the authored
+            // English minimum while giving translated words their measured single-line width.
+            float width = Mathf.Max(130f, Mathf.Ceil(label.GetPreferredValues(title).x + 50f));
+            button.SetSize(new Vector2(width, OverlayButtonHeight));
+        }
+
         private void OnDisable()
         {
             EndDrag();
@@ -285,6 +325,7 @@ namespace Basis.BasisUI
 
         private void OnDestroy()
         {
+            BasisLocalization.OnLanguageChanged -= RefreshHeaderLanguage;
             EndDrag();
             if (_bootModeHooked)
             {

@@ -353,8 +353,8 @@ namespace SteamAudio
 
             if (mSource != null)
             {
-                // The direct worker may still hold this native handle for one frame.
-                // Defer the release to a worker-idle point; fall back to immediate.
+                // Direct and reflections workers, including staged future runs,
+                // may still hold this handle. Release only after both are done.
                 if (SteamAudioManager.TryDeferSourceRelease(mSource))
                     mSource = null;
                 else
@@ -489,7 +489,7 @@ namespace SteamAudio
                 useDistanceCurveForReflections;
 
             // Validate pathing once (no hot-path side effects)
-            bool pathingEnabledAndValid = pathing && (pathingProbeBatch != null);
+            bool pathingEnabledAndValid = pathing && pathingProbeBatch != null && pathingProbeBatch.isActiveAndEnabled;
             if (pathing && pathingProbeBatch == null)
             {
                 pathing = false; // preserve existing behavior, but do it once here

@@ -217,6 +217,7 @@ public static class BasisIOManagement
     {
         public byte[] Data; // present when downloaded to memory
         public string Path; // present when downloaded to file
+        public long TotalLength;
         public BasisRemoteValidator Validator; // response cache validators, when the host sends any
     }
 
@@ -258,7 +259,7 @@ public static class BasisIOManagement
         long connectorStart = BasisBeeConstants.RemoteHeaderSize;
         long connectorEndInclusive = BasisBeeConstants.RemoteHeaderSize + connectorLength - 1;
 
-        var connectorRes = await DownloadRangeInternal(url, connectorStart, connectorEndInclusive, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+        var connectorRes = await DownloadRangeInternal(url, connectorStart, connectorEndInclusive, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB, headerRes.Value.Validator.ETag, headerRes.Value.TotalLength);
 
         if (!connectorRes.IsSuccess || connectorRes.Value.Data == null)
             return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Failed to download connector block. {connectorRes.Error ?? "No data"}", connectorRes.ResponseCode);
@@ -324,7 +325,7 @@ public static class BasisIOManagement
             if (isPlatform)
             {
                 BasisDebug.Log($"Downloading platform section range {start}-{end}");
-                var sectRes = await DownloadRangeInternal(url, start, end, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+                var sectRes = await DownloadRangeInternal(url, start, end, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB, headerRes.Value.Validator.ETag, headerRes.Value.TotalLength);
 
                 if (!sectRes.IsSuccess || sectRes.Value?.Data == null)
                     return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Failed to download platform section at index {index}. {sectRes.Error ?? "No data"}", sectRes.ResponseCode);
@@ -349,7 +350,7 @@ public static class BasisIOManagement
         if ((platformSectionData == null || platformSectionData.Length == 0) && genericStart >= 0)
         {
             BasisDebug.Log($"No section for {Application.platform}; falling back to Generic (glTF) section range {genericStart}-{genericStart + genericLength - 1}");
-            var genericRes = await DownloadRangeInternal(url, genericStart, genericStart + genericLength - 1, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+            var genericRes = await DownloadRangeInternal(url, genericStart, genericStart + genericLength - 1, toFilePath: null, progressCallback, cancellationToken, MaxDownloadSizeInMB, headerRes.Value.Validator.ETag, headerRes.Value.TotalLength);
 
             if (!genericRes.IsSuccess || genericRes.Value?.Data == null)
                 return BeeResult<BeeDownloadResult>.Fail($"DownloadBEEEx: Failed to download generic section at index {genericIndex}. {genericRes.Error ?? "No data"}", genericRes.ResponseCode);
@@ -422,7 +423,7 @@ public static class BasisIOManagement
         long start = BasisBeeConstants.RemoteHeaderSize;
         long end = BasisBeeConstants.RemoteHeaderSize + connectorLength - 1;
 
-        var connectorRes = await DownloadRangeInternal(url, start, end, null, progressCallback, cancellationToken, MaxDownloadSizeInMB);
+        var connectorRes = await DownloadRangeInternal(url, start, end, null, progressCallback, cancellationToken, MaxDownloadSizeInMB, headerRes.Value.Validator.ETag, headerRes.Value.TotalLength);
 
         if (connectorRes.IsSuccess == false && connectorRes.Error != string.Empty)
         {
@@ -741,7 +742,7 @@ public static class BasisIOManagement
     /// <param name="ct"></param>
     /// <param name="MaxDownloadSizeInMB">Defaults to 4GB</param>
     /// <returns></returns>
-    private static async Task<BeeResult<DownloadPayload>> DownloadRangeInternal(string url, long startByte, long? endByteInclusive, string toFilePath, BasisProgressReport progress, CancellationToken ct, long MaxDownloadSizeInMB = 4L * 1024 * 1024 * 1024, int redirectsRemaining = MaxValidatedRedirects)
+    private static async Task<BeeResult<DownloadPayload>> DownloadRangeInternal(string url, long startByte, long? endByteInclusive, string toFilePath, BasisProgressReport progress, CancellationToken ct, long MaxDownloadSizeInMB = 4L * 1024 * 1024 * 1024, string expectedETag = null, long expectedTotal = -1, int redirectsRemaining = MaxValidatedRedirects)
     {
         if (!ValidateUrl(url, out url, out var urlErr))
             return BeeResult<DownloadPayload>.Fail(urlErr);
@@ -777,6 +778,7 @@ public static class BasisIOManagement
         string rangeHeader = endByteInclusive.HasValue ? $"bytes={startByte}-{endByteInclusive.Value}" : $"bytes={startByte}-";
 
         req.SetRequestHeader("Range", rangeHeader);
+        if (BasisBeeRangePolicy.IsStrongETag(expectedETag)) req.SetRequestHeader("If-Match", expectedETag);
 
         // The handler appends, so a redirect body would be left in the file before the retry.
         long fileLengthBeforeRequest = -1;
@@ -812,6 +814,11 @@ public static class BasisIOManagement
                 return BeeResult<DownloadPayload>.Fail("Cancelled");
             }
 
+            if (req.downloadedBytes > (ulong)expectedBytes)
+            {
+                req.Abort();
+                return BeeResult<DownloadPayload>.Fail("The server exceeded the requested byte range.");
+            }
             float p = req.downloadProgress * 100f;
             if (progress != null && MathF.Abs(p - lastProgress) >= threshold)
             {
@@ -851,7 +858,7 @@ public static class BasisIOManagement
                     return BeeResult<DownloadPayload>.Fail($"Could not reset '{toFilePath}' before following redirect: {ex.Message}", code);
                 }
             }
-            return await DownloadRangeInternal(nextUrl, startByte, endByteInclusive, toFilePath, progress, ct, MaxDownloadSizeInMB, redirectsRemaining - 1);
+            return await DownloadRangeInternal(nextUrl, startByte, endByteInclusive, toFilePath, progress, ct, MaxDownloadSizeInMB, expectedETag, expectedTotal, redirectsRemaining - 1);
         }
 
         // Normalize network errors first
@@ -859,24 +866,17 @@ public static class BasisIOManagement
         {
             progress?.ReportProgress(requestId, 100, "Downloading Complete");
             var errDetail = BuildNetworkErrorDetail(req);
-            return BeeResult<DownloadPayload>.Fail($"Network error: {req.error}. {errDetail}", code);
+            return BeeResult<DownloadPayload>.Fail($"Network error: {req.result}. {errDetail}", code);
         }
 
         // Enforce partial content semantics and provide actionable reasons
+        long totalLength = 0;
         switch (code)
         {
             case 206:
-                // Validate Content-Range if present to ensure the server honored our request
-                string contentRange = req.GetResponseHeader("Content-Range") ?? string.Empty;
-                if (!string.IsNullOrEmpty(contentRange))
-                {
-                    // Basic sanity check; we avoid parsing fully to keep dependencies light
-                    if (!contentRange.StartsWith("bytes ", StringComparison.OrdinalIgnoreCase))
-                    {
-                        progress?.ReportProgress(requestId, 100, $"Error! {code}");
-                        return BeeResult<DownloadPayload>.Fail($"Unexpected Content-Range header: {contentRange}", code);
-                    }
-                }
+                if (!BasisBeeRangePolicy.Validate(req.GetResponseHeader("Content-Range"), startByte, endByteInclusive.Value,
+                    req.GetResponseHeader("ETag"), expectedETag, expectedTotal, out totalLength, out string rangeError))
+                    return BeeResult<DownloadPayload>.Fail(rangeError, code);
                 break;
 
             case 200:
@@ -901,12 +901,15 @@ public static class BasisIOManagement
                 return BeeResult<DownloadPayload>.Fail($"Unexpected response code: {code}. {details}", code);
         }
 
-        var payload = new DownloadPayload { Validator = ReadValidator(req) };
+        var payload = new DownloadPayload { Validator = ReadValidator(req), TotalLength = totalLength };
         if (toFilePath == null)
         {
             var data = req.downloadHandler.data;
             if (data == null)
                 return BeeResult<DownloadPayload>.Fail("No payload returned (buffer was null).", code);
+
+            if (data.LongLength != expectedBytes)
+                return BeeResult<DownloadPayload>.Fail("The range response body has an unexpected length.", code);
 
             // Optional: verify Content-Length when present
             var contentLengthHeader = req.GetResponseHeader("Content-Length");
@@ -1020,7 +1023,7 @@ public static class BasisIOManagement
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            error = $"The provided URL is not a valid absolute URI: '{url}'.";
+            error = "The provided URL is not a valid absolute URI.";
             BasisDebug.LogError(error);
             return false;
         }
@@ -1032,6 +1035,14 @@ public static class BasisIOManagement
             BasisDebug.LogError(error);
             return false;
         }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        if (BasisDevelopmentCatalogPermit.Allows(uri.AbsoluteUri))
+        {
+            normalizedUrl = uri.AbsoluteUri;
+            return true;
+        }
+#endif
 
         // These URLs arrive over the wire, so a scheme check alone lets a remote player aim
         // every other client at loopback, the LAN, or cloud metadata.
@@ -1051,7 +1062,12 @@ public static class BasisIOManagement
     /// Returns null when the host is allowed, otherwise the reason it was refused.
     /// </summary>
     private static Task<string> ValidateUrlHostResolvesGlobalAsync(string url)
-        => Basis.Scripts.Common.BasisUrlSecurity.ValidateResolvedHostAsync(url);
+    {
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        if (BasisDevelopmentCatalogPermit.Allows(url)) return Task.FromResult<string>(null);
+#endif
+        return Basis.Scripts.Common.BasisUrlSecurity.ValidateResolvedHostAsync(url);
+    }
 
     /// <summary>Hop budget for hand-followed redirects.</summary>
     private const int MaxValidatedRedirects = 5;
@@ -1073,7 +1089,7 @@ public static class BasisIOManagement
 
         // Relative targets are legal; resolve against the URL that produced them.
         if (!Uri.TryCreate(new Uri(currentUrl), location, out Uri resolved))
-            return (false, null, $"Redirect {code} with an unparseable Location '{location}'.");
+            return (false, null, $"Redirect {code} has an invalid destination.");
 
         string next = resolved.AbsoluteUri;
         if (!ValidateUrl(next, out next, out string urlErr))
@@ -1267,7 +1283,7 @@ public static class BasisIOManagement
         long code = req.responseCode;
 
         if (req.result == UnityWebRequest.Result.ConnectionError)
-            return BeeResult<bool>.Fail($"Cannot connect to server: {req.error}", code);
+            return BeeResult<bool>.Fail($"Cannot connect to server: {req.result}", code);
 
         if (req.result == UnityWebRequest.Result.ProtocolError)
         {
@@ -1276,11 +1292,11 @@ public static class BasisIOManagement
             if (code == 403)
                 return BeeResult<bool>.Fail("Access denied to avatar file (403). You may not have permission to access this file.", code);
 
-            return BeeResult<bool>.Fail($"Server returned error {code}: {req.error}", code);
+            return BeeResult<bool>.Fail($"Server returned error {code}: {req.result}", code);
         }
 
         if (req.result != UnityWebRequest.Result.Success)
-            return BeeResult<bool>.Fail($"Request failed: {req.error}", code);
+            return BeeResult<bool>.Fail($"Request failed: {req.result}", code);
 
         return BeeResult<bool>.Ok(true);
     }
@@ -1381,7 +1397,7 @@ public static class BasisIOManagement
 
         if (req.result != UnityWebRequest.Result.Success)
         {
-            return BeeResult<BasisRemoteValidator>.Fail($"Network error: {req.error}. {BuildNetworkErrorDetail(req)}", code);
+            return BeeResult<BasisRemoteValidator>.Fail($"Network error: {req.result}. {BuildNetworkErrorDetail(req)}", code);
         }
 
         return BeeResult<BasisRemoteValidator>.Ok(ReadValidator(req));
@@ -1394,11 +1410,7 @@ public static class BasisIOManagement
     {
         if (req != null)
         {
-            string acceptRanges = req.GetResponseHeader("Accept-Ranges") ?? "n/a";
-            string contentRange = req.GetResponseHeader("Content-Range") ?? "n/a";
-            string contentLen = req.GetResponseHeader("Content-Length") ?? "n/a";
-
-            return $"Accept-Ranges={acceptRanges}, Content-Range={contentRange}, Content-Length={contentLen}";
+            return $"HTTP {req.responseCode}, result {req.result}";
         }
         return "No response header details available.";
     }

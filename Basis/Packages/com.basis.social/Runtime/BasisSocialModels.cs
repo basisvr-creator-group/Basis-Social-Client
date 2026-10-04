@@ -71,6 +71,38 @@ namespace Basis.Social
     }
 
     [Serializable]
+    public sealed class BasisSocialBeeBaAuthorization
+    {
+        public string deviceCode;
+        public string userCode;
+        public string verificationUri;
+        public long expiresIn;
+        public long interval;
+    }
+
+    [Serializable]
+    public sealed class BasisSocialDeviceSession
+    {
+        public string id;
+        public string createdAt;
+        public string lastUsedAt;
+        public string expiresAt;
+        public bool current;
+    }
+
+    [Serializable]
+    internal sealed class BasisSocialSessionList { public BasisSocialDeviceSession[] items; }
+
+    [Serializable]
+    internal sealed class BasisSocialBeeBaStartRequest { public string codeChallenge; }
+
+    [Serializable]
+    internal sealed class BasisSocialBeeBaCompleteRequest { public string deviceCode; public string codeVerifier; }
+
+    [Serializable]
+    internal sealed class BasisSocialProfileTextUpdate { public string bio; public string statusText; }
+
+    [Serializable]
     internal sealed class BasisSocialLoginRequest
     {
         public string login;

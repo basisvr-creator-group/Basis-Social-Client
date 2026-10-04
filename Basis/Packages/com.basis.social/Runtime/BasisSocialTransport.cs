@@ -10,7 +10,8 @@ namespace Basis.Social
     {
         Get,
         Post,
-        Delete
+        Delete,
+        Patch
     }
 
     public sealed class BasisSocialHttpRequest
@@ -41,15 +42,9 @@ namespace Basis.Social
         private readonly string baseUrl;
         private readonly int timeoutSeconds;
 
-        public BasisSocialUnityWebRequestTransport(string baseUrl, int timeoutSeconds = 20)
+        public BasisSocialUnityWebRequestTransport(string baseUrl, int timeoutSeconds = 20, bool allowLoopbackHttp = false)
         {
-            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out Uri parsed) ||
-                (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
-            {
-                throw new ArgumentException("Basis Social base URL must be an absolute HTTP(S) URL.", nameof(baseUrl));
-            }
-
-            this.baseUrl = baseUrl.TrimEnd('/');
+            this.baseUrl = BasisSocialRuntime.NormalizeBaseUrl(baseUrl, allowLoopbackHttp);
             this.timeoutSeconds = Math.Max(1, timeoutSeconds);
         }
 
@@ -57,9 +52,11 @@ namespace Basis.Social
             BasisSocialHttpRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (request == null) throw new ArgumentNullException(nameof(request));
             if (string.IsNullOrWhiteSpace(request.Path) || !request.Path.StartsWith("/", StringComparison.Ordinal) ||
-                Uri.TryCreate(request.Path, UriKind.Absolute, out _))
+                request.Path.StartsWith("//", StringComparison.Ordinal) || request.Path.IndexOf('\\') >= 0 ||
+                request.Path.IndexOf('#') >= 0)
             {
                 throw new ArgumentException("Basis Social request paths must be relative and begin with '/'.", nameof(request));
             }
@@ -69,13 +66,15 @@ namespace Basis.Social
                 BasisSocialHttpMethod.Get => UnityWebRequest.kHttpVerbGET,
                 BasisSocialHttpMethod.Post => UnityWebRequest.kHttpVerbPOST,
                 BasisSocialHttpMethod.Delete => UnityWebRequest.kHttpVerbDELETE,
+                BasisSocialHttpMethod.Patch => "PATCH",
                 _ => throw new ArgumentOutOfRangeException(nameof(request.Method), request.Method, null)
             };
 
             using var webRequest = new UnityWebRequest(baseUrl + request.Path, method)
             {
                 downloadHandler = new DownloadHandlerBuffer(),
-                timeout = timeoutSeconds
+                timeout = timeoutSeconds,
+                redirectLimit = 0
             };
 
             if (request.BodyJson != null)

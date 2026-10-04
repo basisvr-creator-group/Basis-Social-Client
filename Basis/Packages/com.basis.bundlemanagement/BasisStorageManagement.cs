@@ -152,7 +152,7 @@ public static class BasisStorageManagement
 
         if (!removedAny)
         {
-            BasisDebug.LogWarning($"No OnDiscData entry found for URL: {remoteUrl}", BasisDebug.LogTag.Event);
+            BasisDebug.LogWarning($"No OnDiscData entry found for URL: [remote content]", BasisDebug.LogTag.Event);
             return false;
         }
 
@@ -286,7 +286,7 @@ public static class BasisStorageManagement
         string metaPath = BasisIOManagement.GetMetaCacheFilePath(meta.UniqueVersion, meta.DownloadedPlatform);
         TryDeleteFile(metaPath);
 
-        BasisDebug.Log($"Deleted stored BEE file: {meta.UniqueVersion} [{meta.DownloadedPlatform}] (source: {meta.StoredRemote.RemoteBeeFileLocation})", BasisDebug.LogTag.Event);
+        BasisDebug.Log($"Deleted stored BEE file: {meta.UniqueVersion} [{meta.DownloadedPlatform}] (source: [remote content])", BasisDebug.LogTag.Event);
         return true;
     }
 

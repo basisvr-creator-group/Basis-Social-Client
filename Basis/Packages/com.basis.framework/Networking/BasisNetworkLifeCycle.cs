@@ -66,6 +66,7 @@ public static class BasisNetworkLifeCycle
     {
         if (System.Threading.Interlocked.CompareExchange(ref _rebootGuard, 1, 0) == 0)
         {
+            BasisNetworkResourceGate.InvalidatePending();
             BasisDebug.Log($"Rebooting Network Connection", BasisDebug.LogTag.Networking);
             if (BasisNetworkConnection.LocalPlayerPeer != null && BasisNetworkPlayers.Players.TryGetValue((ushort)BasisNetworkConnection.LocalPlayerPeer.RemoteId, out var networkedPlayer))
             {
@@ -115,6 +116,7 @@ public static class BasisNetworkLifeCycle
     /// </summary>
     public static async Task Destroy()
     {
+        BasisNetworkResourceGate.InvalidatePending();
         BasisDebug.Log($"Shutting Down Network Connection", BasisDebug.LogTag.Networking);
         BasisNetworkConnectionWatchdog.Reset();
         if (BasisNetworkConnection.LocalPlayerPeer != null && BasisNetworkPlayers.Players.TryGetValue((ushort)BasisNetworkConnection.LocalPlayerPeer.RemoteId, out var networkedPlayer))

@@ -13,6 +13,7 @@ using Basis.Scripts.UI.UI_Panels;
 using GatorDragonGames.JigglePhysics;
 using System;
 using System.Collections;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -306,10 +307,15 @@ namespace Basis.Scripts.BasisSdk.Players
                 BasisSceneFactory.SpawnPlayer(this);
             }
         }
-        public async Task CreateAvatar(byte LoadMode, BasisLoadableBundle BasisLoadableBundle)
+        public async Task CreateAvatar(byte LoadMode, BasisLoadableBundle BasisLoadableBundle, CancellationToken cancellationToken = default, bool rememberAvatar = true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            await BasisAvatarFactory.LoadAvatarLocal(this, LoadMode, BasisLoadableBundle, this.transform.position, Quaternion.identity, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            // The factory keeps the existing avatar or installs a fallback after a failed load.
+            // Never save or broadcast the requested address unless this exact bundle was installed.
+            if (!ReferenceEquals(AvatarMetaData, BasisLoadableBundle)) return;
             CurrentAvatarUniqueID = BasisLoadableBundle.BasisRemoteBundleEncrypted.RemoteBeeFileLocation;
-            await BasisAvatarFactory.LoadAvatarLocal(this, LoadMode, BasisLoadableBundle, this.transform.position, Quaternion.identity);
             OnLocalAvatarChanged?.Invoke();
 
             // Tell the constraint solver which hierarchy is ours. It bands how often it re-reads a
@@ -319,7 +325,7 @@ namespace Basis.Scripts.BasisSdk.Players
             // correct, just without the saving.
             BasisConstraintSystem.SetPriorityRoot(
                 BasisAvatar != null ? BasisAvatar.transform.root : null);
-            if (LoadMode != (byte)BasisLoadMode.ByGameobjectReference)
+            if (rememberAvatar && LoadMode != (byte)BasisLoadMode.ByGameobjectReference)
             {
                 BasisDataStore.SaveAvatar(CurrentAvatarUniqueID, LoadMode, LoadFileNameAndExtension, BasisLoadableBundle.UnlockPassword);
                 if (LoadMode == (byte)BasisLoadMode.Download && !string.IsNullOrEmpty(CurrentAvatarUniqueID) && !BasisAvatarFactory.IsLoadingAvatar(BasisLoadableBundle))
